@@ -95,14 +95,21 @@ is already used.
 The `Add?` and `New Rev` headers carry hover notes explaining this on the
 sheet, and the same is written under the buttons on the Setup sheet.
 
-## Setup sheet options
+## Setup sheet
+
+Three blocks, top to bottom: **Project**, **Options**, **New revision**, with
+the suitability codes in column F and the buttons to the right.
+
+**Anything shaded yellow is yours to fill in.** Grey italic cells are written
+by the tool. Everything else is a label or a note.
 
 | Cell | Meaning |
 |---|---|
 | `B7` Schedules folder | blank = the folder this file is saved in. Filled in automatically if the tool has to ask |
 | `B8` Backup before changes | `Yes` / `No` |
 | `B9` Refresh list on open | `No` by default. `Yes` reads every schedule at startup |
-| `B12` Full refresh every time | `No` by default, which reopens only files whose modified date changed since the last refresh. `Yes` always reopens everything |
+| `B10` Full refresh every time | `No` by default, which reopens only files whose modified date changed since the last refresh. `Yes` always reopens everything |
+| `B11`, `B12` | when setup and the refresh last ran. Written by the tool, read only |
 | `F1:F...` Suitability Codes | the dropdown pushed into every schedule's Metadata sheet and revision table. Seeded with the ISO 19650 codes below; edit here and re-run setup to push the change to all files |
 
 ## Suitability codes

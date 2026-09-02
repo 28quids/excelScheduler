@@ -17,10 +17,17 @@ Option Explicit
 Private Const R_OPT_FOLDER  As Long = 7
 Private Const R_OPT_BACKUP  As Long = 8
 Private Const R_OPT_AUTO    As Long = 9
-Private Const R_OPT_SETUP   As Long = 10
-Private Const R_OPT_LIST    As Long = 11
-Private Const R_OPT_FULL    As Long = 12
+Private Const R_OPT_FULL    As Long = 10
+Private Const R_OPT_SETUP   As Long = 11   ' read only
+Private Const R_OPT_LIST    As Long = 12   ' read only
 Private Const R_REV_FIRST   As Long = 15   ' Revision..Description = 15..21
+
+' Setup sheet palette. Yellow means "you fill this in".
+Private Const CLR_INPUT     As Long = 14810111   ' RGB(255, 251, 225)
+Private Const CLR_READONLY  As Long = 15921906   ' RGB(242, 242, 242)
+Private Const CLR_NOTE      As Long = 8421504    ' RGB(128, 128, 128)
+Private Const CLR_SECTION   As Long = 6575172    ' RGB(68, 84, 100)
+Private Const CLR_LABEL     As Long = 4210752    ' RGB(64, 64, 64)
 
 ' ScheduleList columns.
 Private Const C_PICK      As Long = 1
@@ -60,6 +67,10 @@ Public Sub InstallTool()
     End If
 
     wsSetup.Activate
+    On Error Resume Next
+    ActiveWindow.DisplayGridlines = False
+    On Error GoTo 0
+
     MsgBox "Ready." & vbCrLf & vbCrLf & _
            "1. Fill in Client, Project Name and Project Number on this sheet." & vbCrLf & _
            "2. Save this file into the project folder with the schedules." & vbCrLf & _
@@ -885,25 +896,59 @@ End Function
 
 
 Private Sub BuildSetupSheet(ByVal ws As Worksheet)
+    ' Start from a clean slate so re-running does not stack formatting up.
+    ws.Range("A1:F40").ClearFormats
+    ws.Range("H1:H20").ClearFormats
+    ws.Range("A1:A" & R_REV_FIRST + 6).Font.Color = CLR_LABEL
+
+    ' Thin spacer rows, so each block reads as a block instead of a gap.
+    ws.Rows(2).RowHeight = 6
+    ws.Rows(5).RowHeight = 6
+    ws.Rows(13).RowHeight = 6
+
+    ' --- Project -----------------------------------------------------------
+    ' Rows 1, 3 and 4 are fixed. Schedules set up before now link to $B$1,
+    ' $B$3 and $B$4, so moving them would silently repoint every one of them
+    ' until the repair was run again. Not worth it for tidiness.
     ws.Range("A1").Value = "Client"
     ws.Range("A3").Value = "Project Name"
     ws.Range("A4").Value = "Project Number"
+    InputCell ws.Range("B1")
+    InputCell ws.Range("B3")
+    InputCell ws.Range("B4")
 
-    ws.Cells(6, 1).Value = "Options"
+    ' --- Options -----------------------------------------------------------
+    SectionHeader ws, 6, "OPTIONS"
     ws.Cells(R_OPT_FOLDER, 1).Value = "Schedules folder"
     ws.Cells(R_OPT_BACKUP, 1).Value = "Backup before changes"
     ws.Cells(R_OPT_AUTO, 1).Value = "Refresh list on open"
+    ws.Cells(R_OPT_FULL, 1).Value = "Full refresh every time"
     ws.Cells(R_OPT_SETUP, 1).Value = "Last setup run"
     ws.Cells(R_OPT_LIST, 1).Value = "Last list refresh"
-    ws.Cells(R_OPT_FULL, 1).Value = "Full refresh every time"
+
+    InputCell ws.Cells(R_OPT_FOLDER, 2)
+    InputCell ws.Cells(R_OPT_BACKUP, 2)
+    InputCell ws.Cells(R_OPT_AUTO, 2)
+    InputCell ws.Cells(R_OPT_FULL, 2)
+    ReadOnlyCell ws.Cells(R_OPT_SETUP, 2)
+    ReadOnlyCell ws.Cells(R_OPT_LIST, 2)
 
     If Len(Trim$(CStr(ws.Cells(R_OPT_BACKUP, 2).Value))) = 0 Then ws.Cells(R_OPT_BACKUP, 2).Value = "Yes"
     If Len(Trim$(CStr(ws.Cells(R_OPT_AUTO, 2).Value))) = 0 Then ws.Cells(R_OPT_AUTO, 2).Value = "No"
     If Len(Trim$(CStr(ws.Cells(R_OPT_FULL, 2).Value))) = 0 Then ws.Cells(R_OPT_FULL, 2).Value = "No"
-    ws.Cells(R_OPT_FOLDER, 3).Value = "(blank = the folder this file is saved in)"
-    ws.Cells(R_OPT_FULL, 3).Value = "(No = only reopen files that changed since the last refresh)"
 
-    ws.Cells(R_REV_FIRST - 1, 1).Value = "New revision (fallback for blank cells on ScheduleList)"
+    YesNoList ws.Cells(R_OPT_BACKUP, 2)
+    YesNoList ws.Cells(R_OPT_AUTO, 2)
+    YesNoList ws.Cells(R_OPT_FULL, 2)
+
+    Note ws.Cells(R_OPT_FOLDER, 3), "blank = the folder this file is saved in"
+    Note ws.Cells(R_OPT_BACKUP, 3), "copies every file into a timestamped folder first"
+    Note ws.Cells(R_OPT_AUTO, 3), "reads every schedule when this file is opened"
+    Note ws.Cells(R_OPT_FULL, 3), "No = only reopen files that changed since last time"
+
+    ' --- New revision ------------------------------------------------------
+    SectionHeader ws, R_REV_FIRST - 1, "NEW REVISION"
+    Note ws.Cells(R_REV_FIRST - 1, 3), "used for blank 'New ...' cells on ScheduleList"
     ws.Cells(R_REV_FIRST + 0, 1).Value = "Revision"
     ws.Cells(R_REV_FIRST + 1, 1).Value = "Status"
     ws.Cells(R_REV_FIRST + 2, 1).Value = "Date"
@@ -911,34 +956,105 @@ Private Sub BuildSetupSheet(ByVal ws As Worksheet)
     ws.Cells(R_REV_FIRST + 4, 1).Value = "Checked by"
     ws.Cells(R_REV_FIRST + 5, 1).Value = "Approved by"
     ws.Cells(R_REV_FIRST + 6, 1).Value = "Description"
+    InputCell ws.Range(ws.Cells(R_REV_FIRST, 2), ws.Cells(R_REV_FIRST + 6, 2))
     ws.Cells(R_REV_FIRST + 2, 2).NumberFormat = "dd/mm/yyyy"
 
-    ws.Range("F1").Value = "Suitability Codes"
+    ' --- Suitability codes -------------------------------------------------
+    SectionHeader ws, 1, "SUITABILITY CODES", 6
     If SuitabilityCount(ws) = 0 Then SeedSuitabilityCodes ws
+    If SuitabilityCount(ws) > 0 Then _
+        InputCell ws.Range(ws.Cells(2, 6), ws.Cells(SuitabilityCount(ws) + 1, 6))
+    SuitabilityList ws, ws.Cells(R_REV_FIRST + 1, 2)
 
-    ' Sits under the buttons. The status bar is easy to miss otherwise.
-    ws.Range("H9").Value = "Progress is shown in the status bar, bottom-left of the Excel window."
-    ws.Range("H10").Value = "Every run writes a line per file to the Log sheet and finishes with a summary."
-    ws.Range("H12").Value = "Added a schedule to the folder? Press 'Set up / repair schedules' again. It is safe to re-run."
-    ws.Range("H13").Value = "To reissue: on ScheduleList put an x in 'Add?' and fill the blue 'New ...' columns on that row,"
-    ws.Range("H14").Value = "then press 'Add revision to ticked'. Blank 'New ...' cells fall back to the block in A15:B21."
-    ws.Range("H9:H14").Font.Italic = True
-    ws.Range("H9:H14").Font.Color = RGB(100, 100, 100)
+    ' --- Notes beside the buttons -----------------------------------------
+    Note ws.Range("H9"), "Cells shaded yellow are the ones you fill in."
+    Note ws.Range("H10"), "Progress is shown in the status bar, bottom-left of the Excel window."
+    Note ws.Range("H11"), "Every run writes a line per file to the Log sheet, then a summary."
+    Note ws.Range("H13"), "Added a schedule? Press 'Set up / repair schedules' again - it is safe to re-run."
+    Note ws.Range("H14"), "To reissue: on ScheduleList put an x in 'Add?', fill the blue 'New ...' columns,"
+    Note ws.Range("H15"), "then press 'Add revision to ticked'. Blanks fall back to the block above."
 
-    ws.Range("A1,A3,A4,A6,F1").Font.Bold = True
-    ws.Cells(R_REV_FIRST - 1, 1).Font.Bold = True
-    ws.Columns("A").AutoFit
-    If ws.Columns("B").ColumnWidth < 30 Then ws.Columns("B").ColumnWidth = 30
+    ' --- Layout ------------------------------------------------------------
+    ws.Columns("A").ColumnWidth = 24
+    ws.Columns("B").ColumnWidth = 34
+    ws.Columns("C").ColumnWidth = 46
+    ws.Columns("D:E").ColumnWidth = 3
+    ws.Columns("F").ColumnWidth = 34
+    ws.Columns("G").ColumnWidth = 3
+    ws.Range("A1:F40").VerticalAlignment = xlCenter
 End Sub
 
 
-' A hover note on a header cell. Cheap way to explain a column without
-' spending a row of the sheet on it.
-Private Sub HeaderNote(ByVal cell As Range, ByVal txt As String)
+' A section title: bold, coloured, with a rule underneath.
+Private Sub SectionHeader(ByVal ws As Worksheet, ByVal r As Long, ByVal txt As String, _
+                          Optional ByVal firstCol As Long = 1, Optional ByVal lastCol As Long = 3)
+    Dim rng As Range
+
+    If firstCol > 1 Then lastCol = firstCol
+    ws.Cells(r, firstCol).Value = txt
+    Set rng = ws.Range(ws.Cells(r, firstCol), ws.Cells(r, lastCol))
+
+    With rng.Font
+        .Bold = True
+        .Color = CLR_SECTION
+        .Size = 10
+    End With
+    With rng.Borders(xlEdgeBottom)
+        .LineStyle = xlContinuous
+        .Weight = xlThin
+        .Color = RGB(180, 190, 205)
+    End With
+End Sub
+
+
+' A cell the user is meant to type in.
+Private Sub InputCell(ByVal rng As Range)
+    rng.Interior.Color = CLR_INPUT
+    With rng.Borders
+        .LineStyle = xlContinuous
+        .Weight = xlThin
+        .Color = RGB(214, 206, 160)
+    End With
+End Sub
+
+
+' A cell the tool writes and the user should leave alone.
+Private Sub ReadOnlyCell(ByVal rng As Range)
+    rng.Interior.Color = CLR_READONLY
+    rng.Font.Italic = True
+    rng.Font.Color = CLR_NOTE
+End Sub
+
+
+Private Sub Note(ByVal rng As Range, ByVal txt As String)
+    rng.Value = txt
+    rng.Font.Italic = True
+    rng.Font.Color = CLR_NOTE
+    rng.Font.Size = 9
+End Sub
+
+
+Private Sub YesNoList(ByVal rng As Range)
     On Error Resume Next
-    cell.ClearComments
-    cell.AddComment txt
-    cell.Comment.Shape.TextFrame.AutoSize = True
+    rng.Validation.Delete
+    rng.Validation.Add Type:=xlValidateList, AlertStyle:=xlValidAlertStop, _
+        Operator:=xlBetween, Formula1:="Yes,No"
+    rng.Validation.InCellDropdown = True
+    On Error GoTo 0
+End Sub
+
+
+Private Sub SuitabilityList(ByVal wsSetup As Worksheet, ByVal rng As Range)
+    Dim n As Long
+    n = SuitabilityCount(wsSetup)
+    If n < 1 Then Exit Sub
+
+    On Error Resume Next
+    rng.Validation.Delete
+    rng.Validation.Add Type:=xlValidateList, AlertStyle:=xlValidAlertStop, _
+        Operator:=xlBetween, Formula1:="=$F$2:$F$" & (n + 1)
+    rng.Validation.IgnoreBlank = True
+    rng.Validation.InCellDropdown = True
     On Error GoTo 0
 End Sub
 
