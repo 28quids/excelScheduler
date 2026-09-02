@@ -46,9 +46,10 @@ That's it. Nothing else is typed twice.
 
 **Set up / repair schedules** — opens every workbook in the folder, points its
 Metadata at this MPI, rebuilds the local references, clears leftover links from
-whatever it was copied from, and saves. Safe to press again at any time, so it
-is also the "I just added a schedule" button and the "someone broke a link"
-button. It backs up every file it touches into a timestamped `_backup` folder
+whatever it was copied from, and saves. It is idempotent, so **adding a new
+schedule to the folder needs nothing more than pressing this again**. Same for
+a link someone has broken, or a change to the suitability codes or the revision
+families. It backs up every file it touches into a timestamped `_backup` folder
 first (turn that off on the Setup sheet if you don't want it).
 
 **Refresh schedule list** — reads every schedule and writes what it actually
@@ -84,6 +85,15 @@ So both jobs are the same operation:
 It appends one row per revision table, refuses a revision number that is
 already in that file, and clears the tick and the typed values on the rows that
 succeeded so the list is ready for the next round.
+
+The new line goes in **directly under the last revision**, not at the bottom of
+the table. Revision tables are usually drawn with spare rows below the last
+entry, and appending past them leaves a gap that makes the title block look
+like it skipped a revision. The table only grows by a row when every row in it
+is already used.
+
+The `Add?` and `New Rev` headers carry hover notes explaining this on the
+sheet, and the same is written under the buttons on the Setup sheet.
 
 ## Setup sheet options
 

@@ -700,7 +700,7 @@ Public Function AppendRevision(ByVal wb As Workbook, ByVal rev As String, ByVal 
                                ByVal descr As String) As String
     Dim wsRev As Worksheet
     Dim lo As ListObject
-    Dim newRow As ListRow
+    Dim target As Range
     Dim cell As Range
 
     Set wsRev = GetSheet(wb, SH_REV)
@@ -727,22 +727,56 @@ Public Function AppendRevision(ByVal wb As Workbook, ByVal rev As String, ByVal 
         Next cell
     End If
 
-    Set newRow = lo.ListRows.Add
-    SetCol lo, newRow, "Revision", rev
-    SetCol lo, newRow, "Status", status
-    SetCol lo, newRow, "Date", issueDate
-    SetCol lo, newRow, "Prepared by", prep
-    SetCol lo, newRow, "Checked by", chk
-    SetCol lo, newRow, "Approved by", app
-    SetCol lo, newRow, "Description", descr
+    Set target = NextRevisionRow(lo)
+    If target Is Nothing Then
+        AppendRevision = "could not find a row to write to"
+        Exit Function
+    End If
+
+    SetCol lo, target, "Revision", rev
+    SetCol lo, target, "Status", status
+    SetCol lo, target, "Date", issueDate
+    SetCol lo, target, "Prepared by", prep
+    SetCol lo, target, "Checked by", chk
+    SetCol lo, target, "Approved by", app
+    SetCol lo, target, "Description", descr
 End Function
 
 
-Private Sub SetCol(ByVal lo As ListObject, ByVal lr As ListRow, _
+' The row a new revision belongs in: the first empty row of the table, so the
+' line lands directly under the previous revision.
+'
+' Revision tables are usually drawn with spare rows below the last entry.
+' ListRows.Add would jump past them and leave a gap, which is what makes a
+' title block look like it skipped a revision. Only when every row is used
+' does the table actually grow by one.
+Private Function NextRevisionRow(ByVal lo As ListObject) As Range
+    Dim body As Range
+    Dim i As Long, lastUsed As Long
+
+    Set body = lo.DataBodyRange
+    If body Is Nothing Then
+        Set NextRevisionRow = lo.ListRows.Add.Range
+        Exit Function
+    End If
+
+    For i = 1 To body.Rows.Count
+        If Application.WorksheetFunction.CountA(body.Rows(i)) > 0 Then lastUsed = i
+    Next i
+
+    If lastUsed < body.Rows.Count Then
+        Set NextRevisionRow = body.Rows(lastUsed + 1)
+    Else
+        Set NextRevisionRow = lo.ListRows.Add.Range
+    End If
+End Function
+
+
+Private Sub SetCol(ByVal lo As ListObject, ByVal rowRange As Range, _
                    ByVal colName As String, ByVal v As Variant)
     Dim idx As Long
     On Error Resume Next
     idx = lo.ListColumns(colName).Index
     On Error GoTo 0
-    If idx > 0 Then lr.Range.Cells(1, idx).Value = v
+    If idx > 0 Then rowRange.Cells(1, idx).Value = v
 End Sub

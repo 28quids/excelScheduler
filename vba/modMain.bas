@@ -919,13 +919,27 @@ Private Sub BuildSetupSheet(ByVal ws As Worksheet)
     ' Sits under the buttons. The status bar is easy to miss otherwise.
     ws.Range("H9").Value = "Progress is shown in the status bar, bottom-left of the Excel window."
     ws.Range("H10").Value = "Every run writes a line per file to the Log sheet and finishes with a summary."
-    ws.Range("H9:H10").Font.Italic = True
-    ws.Range("H9:H10").Font.Color = RGB(100, 100, 100)
+    ws.Range("H12").Value = "Added a schedule to the folder? Press 'Set up / repair schedules' again. It is safe to re-run."
+    ws.Range("H13").Value = "To reissue: on ScheduleList put an x in 'Add?' and fill the blue 'New ...' columns on that row,"
+    ws.Range("H14").Value = "then press 'Add revision to ticked'. Blank 'New ...' cells fall back to the block in A15:B21."
+    ws.Range("H9:H14").Font.Italic = True
+    ws.Range("H9:H14").Font.Color = RGB(100, 100, 100)
 
     ws.Range("A1,A3,A4,A6,F1").Font.Bold = True
     ws.Cells(R_REV_FIRST - 1, 1).Font.Bold = True
     ws.Columns("A").AutoFit
     If ws.Columns("B").ColumnWidth < 30 Then ws.Columns("B").ColumnWidth = 30
+End Sub
+
+
+' A hover note on a header cell. Cheap way to explain a column without
+' spending a row of the sheet on it.
+Private Sub HeaderNote(ByVal cell As Range, ByVal txt As String)
+    On Error Resume Next
+    cell.ClearComments
+    cell.AddComment txt
+    cell.Comment.Shape.TextFrame.AutoSize = True
+    On Error GoTo 0
 End Sub
 
 
@@ -977,6 +991,19 @@ Private Sub BuildListHeaders(ByVal ws As Worksheet)
         Interior.Color = RGB(214, 232, 255)
     ws.Columns(C_STAMP).Hidden = True
     ws.Columns(C_FILECHK).Hidden = True
+
+    HeaderNote ws.Cells(1, C_PICK), _
+        "Put an x here on every schedule you are reissuing, then press " & _
+        "'Add revision to ticked' on the Setup sheet." & vbCrLf & vbCrLf & _
+        "The revision itself comes from the blue 'New ...' columns on the same row. " & _
+        "Anything you leave blank there is taken from the 'New revision' block on " & _
+        "the Setup sheet, so common values only get typed once."
+    HeaderNote ws.Cells(1, C_NEW_FIRST), _
+        "The revision line to add to this schedule." & vbCrLf & vbCrLf & _
+        "Fill in as much or as little as you like: blank cells fall back to the " & _
+        "'New revision' block on the Setup sheet. Rows without an x in 'Add?' are " & _
+        "ignored." & vbCrLf & vbCrLf & _
+        "The new line goes in directly under the last revision in the table."
 
     On Error Resume Next
     If Not ws.AutoFilterMode Then ws.Range(ws.Cells(1, 1), ws.Cells(1, C_CHECKS)).AutoFilter
