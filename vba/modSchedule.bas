@@ -120,6 +120,9 @@ Public Function RepairWorkbook(ByVal wbTgt As Workbook, _
     ' --- Revision Page title block, driven by the revision table ---------
     log = log & WriteRevisionFormulas(wsRev)
 
+    ' --- Any other cell anywhere that ranks the revision table -----------
+    log = log & UpgradeRevisionFormulas(wbTgt)
+
     ' --- Suitability dropdown, kept local so it survives without the MPI --
     log = log & WriteStatusList(wsMeta, wsRev, statuses)
 
@@ -490,6 +493,93 @@ Private Function WriteRevisionFormulas(ByVal wsRev As Worksheet) As String
 End Function
 
 
+' Rewrites every formula ANYWHERE in the workbook that picks the latest row
+' out of the revision table, not just the seven on the Revision Page. Catches
+' the copies that live on the front cover or in a schedule sheet header.
+'
+' Only touches cells whose formula already ranks RevisionTable[Revision] with
+' MAX(), so it cannot wander into unrelated formulas.
+Private Function UpgradeRevisionFormulas(ByVal wb As Workbook) As String
+    Dim ws As Worksheet
+    Dim rng As Range, cell As Range
+    Dim f As String, newF As String
+    Dim changed As Long
+
+    For Each ws In wb.Worksheets
+        Set rng = Nothing
+        On Error Resume Next
+        Set rng = ws.UsedRange.SpecialCells(xlCellTypeFormulas)
+        On Error GoTo 0
+        If Not rng Is Nothing Then
+            For Each cell In rng.Cells
+                f = CellFormula(cell)
+                If InStr(1, f, "RevisionTable[Revision]", vbTextCompare) > 0 _
+                   And InStr(1, f, "MAX(", vbTextCompare) > 0 Then
+                    newF = RebuildRevFormula(f)
+                    If Len(newF) > 0 And StrComp(newF, f, vbBinaryCompare) <> 0 Then
+                        PutFormula cell, newF
+                        changed = changed + 1
+                    End If
+                End If
+            Next cell
+        End If
+    Next ws
+
+    If changed > 0 Then _
+        UpgradeRevisionFormulas = "Rebuilt " & changed & " revision formula(s) with AF > C > P ranking. "
+End Function
+
+
+Private Function CellFormula(ByVal cell As Range) As String
+    On Error Resume Next
+    CellFormula = cell.Formula2
+    If Len(CellFormula) = 0 Then CellFormula = cell.Formula
+    On Error GoTo 0
+End Function
+
+
+' Works out what an existing revision formula returns, then regenerates it with
+' the family-aware ranking. Returns "" if it cannot tell, in which case the
+' original formula is left exactly as it is.
+Private Function RebuildRevFormula(ByVal f As String) As String
+    Dim re As Object, matches As Object
+    Dim i As Long
+    Dim col As String
+
+    ' The two suitability formulas split "S5 - Suitable for ..." apart.
+    If InStr(1, f, " - ", vbTextCompare) > 0 Then
+        If InStr(1, f, "FIND(", vbTextCompare) > 0 And InStr(1, f, "LEFT(", vbTextCompare) > 0 Then
+            RebuildRevFormula = RevFormula("IFERROR(LEFT(stat,FIND("" - "",stat)-1),stat)", True)
+            Exit Function
+        End If
+        If InStr(1, f, "TEXTAFTER(", vbTextCompare) > 0 Then
+            RebuildRevFormula = RevFormula("IFERROR(TEXTAFTER(stat,"" - ""),"""")", True)
+            Exit Function
+        End If
+    End If
+
+    ' Otherwise the answer column is the last RevisionTable[...] that is not
+    ' the Revision column itself.
+    Set re = CreateObject("VBScript.RegExp")
+    re.Global = True
+    re.IgnoreCase = True
+    re.pattern = "RevisionTable\[([^\]\[#]+)\]"
+    Set matches = re.Execute(f)
+
+    For i = 0 To matches.Count - 1
+        If StrComp(matches(i).SubMatches(0), "Revision", vbTextCompare) <> 0 Then
+            col = matches(i).SubMatches(0)
+        End If
+    Next i
+
+    If Len(col) = 0 Then
+        RebuildRevFormula = RevFormula("XLOOKUP(MAX(rank),rank,rev)", False)
+    Else
+        RebuildRevFormula = RevFormula("XLOOKUP(MAX(rank),rank,RevisionTable[" & col & "])", False)
+    End If
+End Function
+
+
 ' Builds the shared LET wrapper that ranks the revision table, then returns
 ' whatever the caller asked for from the winning row.
 '
@@ -561,17 +651,18 @@ End Function
 ' ---------------------------------------------------------------------------
 
 ' Reads a value from a schedule's Metadata sheet by its header text.
-Public Function ReadMeta(ByVal wb As Workbook, ByVal header As String) As String
+Public Function ReadMeta(ByVal wb As Workbook, ByVal header As String) As Variant
     Dim wsMeta As Worksheet
     Dim lbl As Range
 
+    ReadMeta = ""
     Set wsMeta = GetSheet(wb, SH_META)
     If wsMeta Is Nothing Then Exit Function
 
     Set lbl = FindLabel(wsMeta, header, 1, META_LAST_ROW + 5)
     If lbl Is Nothing Then Exit Function
 
-    ReadMeta = CellText(lbl.Offset(0, 1))
+    ReadMeta = CellValue(lbl.Offset(0, 1))
 End Function
 
 

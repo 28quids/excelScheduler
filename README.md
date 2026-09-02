@@ -51,27 +51,39 @@ is also the "I just added a schedule" button and the "someone broke a link"
 button. It backs up every file it touches into a timestamped `_backup` folder
 first (turn that off on the Setup sheet if you don't want it).
 
-**Refresh schedule list** — opens every schedule read-only and writes what it
-actually contains onto the ScheduleList sheet, then checks it. The `Checks`
-column says `OK` or what is wrong. It flags:
+**Refresh schedule list** — reads every schedule and writes what it actually
+contains onto the ScheduleList sheet, then checks it. The `Checks` column says
+`OK` or what is wrong. It flags:
 
 - no Metadata sheet (never been set up)
 - Project Name / Number / Client that don't match the MPI
-- a revision that isn't resolving
-- a file name that disagrees with the schedule name inside
+- a blank revision or schedule name
 - links to any workbook other than the MPI
 - **a revision or date that differs from most of the other schedules**
 
 That last one is the "23 schedules say P04 and one still says P03" check.
 
-Because the files are opened without updating links, the list shows the cached
-values, i.e. exactly what a recipient sees when they open the file offline.
+There is deliberately **no check on the file name**. Document numbers and
+schedule names do not have to match what a file happens to be called, and a QA
+tool that complains about its own conventions is noise.
 
-**Add revision to ticked** — fill in the *New revision* block on the Setup
-sheet, put an `x` in the `Add?` column on ScheduleList next to the schedules
-being reissued, press the button. It appends one row to each revision table and
-refuses to add a revision number that is already there. Deliberately opt-in per
-file: blanket-revving schedules that didn't change is its own QA problem.
+Files are read without updating links and without recalculating, so the list
+shows what is actually saved in each file, i.e. exactly what a recipient sees
+when they open it offline.
+
+**Add revision to ticked** — put an `x` in the `Add?` column and fill in the
+`New Rev` / `New Status` / `New Date` / ... columns on that row. Anything left
+blank falls back to the *New revision* block on the Setup sheet.
+
+So both jobs are the same operation:
+
+- **All 24 on one revision** — fill in the Setup block once, tick every row.
+- **6 of 24, on different revisions** — type each one on its own row, tick
+  those six, leave the rest alone.
+
+It appends one row per revision table, refuses a revision number that is
+already in that file, and clears the tick and the typed values on the rows that
+succeeded so the list is ready for the next round.
 
 ## Setup sheet options
 
@@ -79,7 +91,8 @@ file: blanket-revving schedules that didn't change is its own QA problem.
 |---|---|
 | `B7` Schedules folder | blank = the folder this file is saved in. Filled in automatically if the tool has to ask |
 | `B8` Backup before changes | `Yes` / `No` |
-| `B9` Refresh list on open | `No` by default. `Yes` opens every schedule at startup, which is slow with 20+ files |
+| `B9` Refresh list on open | `No` by default. `Yes` reads every schedule at startup |
+| `B12` Full refresh every time | `No` by default, which reopens only files whose modified date changed since the last refresh. `Yes` always reopens everything |
 | `F1:F...` Suitability Codes | the dropdown pushed into every schedule's revision table. Populated from what your schedules already use on the first run; edit it here and re-run setup |
 
 ## What a schedule must contain
@@ -114,6 +127,34 @@ Rows 7-14 exist so the MPI can read one predictable sheet per schedule instead
 of hunting for labels in a formatted page. Rows 2-6 keep the header names the
 old files already used, so nothing existing breaks.
 
+## Progress, speed and the log
+
+Both long-running buttons show progress and a time estimate on the status bar
+(bottom-left), e.g. `Setting up schedules: 7 of 24 (29%) - about 1m 20s left -
+Radiators Schedule.xlsx`. Every run writes a line per file to the **Log** sheet
+and finishes with a summary box: how many succeeded, were skipped, or failed,
+and how long it took.
+
+The refresh is **incremental by default**. A file whose modified date has not
+changed since the last refresh is not reopened, its row is reused, and only its
+comparison against the Setup values is recalculated. So the first refresh costs
+what it costs, and every one after it is close to instant unless something
+actually changed. Set `Full refresh every time` to `Yes` on the Setup sheet to
+force a complete re-read.
+
+The refresh also reads with calculation set to manual. That is both faster and
+more honest: it reports what is saved in the file rather than what Excel would
+compute after opening it.
+
+### Why there is no "read the properties without opening the file"
+
+Custom document properties can be read from a closed file, but a `.xlsx` has no
+macros, so nothing inside it can keep those properties up to date when someone
+edits it by hand. The tool could stamp them, and they would then be right until
+the first manual edit and quietly wrong afterwards. For a QA tool that is worse
+than being slow, so the incremental refresh above is used instead: it is exact,
+because a file that was not modified cannot have changed.
+
 ## Revision ordering
 
 The title block reads the latest revision out of the revision table, ranking by
@@ -128,6 +169,23 @@ family first and then by number:
 So `AF01` beats `C09` beats `P12`. The list lives in one place, the
 `REV_PREFIXES` constant at the top of `modSchedule.bas`. Add a family there and
 re-run **Set up / repair schedules** to push the new formulas into every file.
+
+The repair rewrites these formulas **everywhere in the workbook**, not just the
+seven cells on the Revision Page, so a copy of the same formula sitting on a
+front cover or in a schedule header gets the new ranking too. It only touches
+formulas that already rank `RevisionTable[Revision]` with `MAX()`, works out
+what each one returns, and leaves anything it cannot identify alone.
+
+## What the repair does and does not touch
+
+It **does** rebuild every cell that should be derived: the Metadata sheet, the
+linked cells on the Front Cover and Revision Page, the revision formulas, the
+suitability dropdown, leftover links and dead defined names.
+
+It **does not** copy layout or static text between workbooks. Two schedules
+whose front covers were built differently stay different. If you want one
+golden front cover pushed into all 24, that is a separate deliberate step and
+worth asking for on its own, because it overwrites whatever is there now.
 
 ## Running from Filery / SharePoint
 

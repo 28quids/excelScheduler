@@ -10,6 +10,7 @@ Public Const SH_META  As String = "Metadata"
 Public Const SH_REV   As String = "Revision Page"
 Public Const SH_SETUP As String = "Setup"
 Public Const SH_LIST  As String = "ScheduleList"
+Public Const SH_LOG   As String = "Log"
 
 ' How far down/across we look for the "SCHEDULE OF ..." title cell.
 Public Const TITLE_MAX_ROW As Long = 60
@@ -17,6 +18,11 @@ Public Const TITLE_MAX_COL As Long = 10
 
 ' Cached file system object (built into Windows, nothing to install).
 Private mFso As Object
+
+' Progress state.
+Private mProgTotal As Long
+Private mProgStart As Double
+Private mProgCaption As String
 
 
 ' Case-insensitive worksheet lookup. Returns Nothing if absent.
@@ -132,15 +138,91 @@ Public Function LooksLikeSchedule(ByVal wb As Workbook) As Boolean
 End Function
 
 
-' Safe string of a cell, turning errors into "" so reports never blow up.
-Public Function CellText(ByVal rng As Range) As String
+' The underlying value of a cell, never its displayed text.
+'
+' .Text returns "#####" when a column is too narrow, which is a display
+' artefact and has nothing to do with the value. Reading it was making the
+' QA report claim revisions were broken when they were fine.
+Public Function CellValue(ByVal rng As Range) As Variant
+    CellValue = ""
     On Error Resume Next
-    If IsError(rng.Value) Then
-        CellText = "#ERROR"
+    If Not IsError(rng.Value) Then CellValue = rng.Value
+    On Error GoTo 0
+End Function
+
+
+' A value as text, for comparisons. Dates are formatted, not left as serials.
+Public Function AsText(ByVal v As Variant) As String
+    On Error Resume Next
+    If IsError(v) Then Exit Function
+    If IsEmpty(v) Or IsNull(v) Then Exit Function
+    If VarType(v) = vbDate Then
+        AsText = Format$(v, "dd/mm/yyyy")
     Else
-        CellText = Trim$(CStr(rng.Text))
+        AsText = Trim$(CStr(v))
     End If
     On Error GoTo 0
+End Function
+
+
+' ---------------------------------------------------------------------------
+' Progress on the status bar, with an estimate of the time left. Cheap, always
+' visible, and it does not flicker the way a repainting sheet does.
+' ---------------------------------------------------------------------------
+
+Public Sub ProgressStart(ByVal total As Long, ByVal caption As String)
+    mProgTotal = total
+    mProgCaption = caption
+    mProgStart = Timer
+    Application.StatusBar = caption & ": starting..."
+    DoEvents
+End Sub
+
+
+Public Sub ProgressStep(ByVal doneCount As Long, ByVal itemName As String)
+    Dim elapsed As Double
+    Dim remaining As Double
+    Dim msg As String
+
+    If mProgTotal < 1 Then Exit Sub
+
+    elapsed = Timer - mProgStart
+    If elapsed < 0 Then elapsed = elapsed + 86400   ' rolled past midnight
+
+    msg = mProgCaption & ": " & doneCount & " of " & mProgTotal & _
+          "  (" & Format$(doneCount / mProgTotal, "0%") & ")"
+
+    If doneCount > 0 And elapsed > 0 Then
+        remaining = (elapsed / doneCount) * (mProgTotal - doneCount)
+        msg = msg & "  -  about " & Duration(remaining) & " left"
+    End If
+
+    If Len(itemName) > 0 Then msg = msg & "  -  " & itemName
+
+    Application.StatusBar = msg
+    DoEvents
+End Sub
+
+
+Public Sub ProgressDone()
+    mProgTotal = 0
+    Application.StatusBar = False
+End Sub
+
+
+Public Function Duration(ByVal seconds As Double) As String
+    Dim m As Long, sec As Long
+    If seconds < 1 Then
+        Duration = "a moment"
+        Exit Function
+    End If
+    m = Int(seconds / 60)
+    sec = Int(seconds - m * 60)
+    If m > 0 Then
+        Duration = m & "m " & sec & "s"
+    Else
+        Duration = sec & "s"
+    End If
 End Function
 
 
@@ -247,4 +329,16 @@ Public Function PickFolder(ByVal promptText As String) As String
     Set fd = Application.FileDialog(msoFileDialogFolderPicker)
     fd.Title = promptText
     If fd.Show = -1 Then PickFolder = fd.SelectedItems(1)
+End Function
+
+
+' Last modified time of a file, or 0 if it cannot be read.
+Public Function FileStamp(ByVal fullPath As String) As Double
+    On Error Resume Next
+    FileStamp = CDbl(Fso.GetFile(fullPath).DateLastModified)
+    If Err.Number <> 0 Then
+        Err.Clear
+        FileStamp = 0
+    End If
+    On Error GoTo 0
 End Function

@@ -7,7 +7,9 @@ Option Explicit
 '   InstallTool           run once, after importing the modules
 '   SetupProject          link/repair every schedule in the folder
 '   RefreshScheduleList   read every schedule back and QA it
-'   AddRevisionToTicked   append one revision line to the ticked schedules
+'   AddRevisionToTicked   append a revision line to the ticked schedules
+'
+' Every run reports to the Log sheet and finishes with a summary box.
 ' ---------------------------------------------------------------------------
 
 ' Setup sheet layout. Rows 1-4 match the original sheet so existing links to
@@ -17,29 +19,32 @@ Private Const R_OPT_BACKUP  As Long = 8
 Private Const R_OPT_AUTO    As Long = 9
 Private Const R_OPT_SETUP   As Long = 10
 Private Const R_OPT_LIST    As Long = 11
-Private Const R_REV_FIRST   As Long = 14   ' Revision .. Description = 14..20
+Private Const R_OPT_FULL    As Long = 12
+Private Const R_REV_FIRST   As Long = 15   ' Revision..Description = 15..21
 
-' ScheduleList columns
-Private Const C_PICK As Long = 1
-Private Const C_FILE As Long = 2
-Private Const C_LAST As Long = 16          ' P = Checks
+' ScheduleList columns.
+Private Const C_PICK      As Long = 1
+Private Const C_FILE      As Long = 2
+Private Const C_DATA_1    As Long = 3      ' ScheduleName
+Private Const C_CHECKS    As Long = 16
+Private Const C_NEW_FIRST As Long = 17     ' New Rev..New Description = 17..23
+Private Const C_STAMP     As Long = 24     ' hidden, file modified time
+Private Const C_FILECHK   As Long = 25     ' hidden, checks that come from the file itself
+Private Const REV_FIELDS  As Long = 7      ' Rev, Status, Date, Pr, Ch, Ap, Descr
+
+Private mLogRow As Long
 
 
 ' ===========================================================================
 ' One-time install
 ' ===========================================================================
 Public Sub InstallTool()
-    Dim wsSetup As Worksheet
-    Dim wsList As Worksheet
+    BuildSetupSheet EnsureSheet(SH_SETUP)
+    BuildListHeaders EnsureSheet(SH_LIST)
+    EnsureSheet(SH_LOG).Cells.Clear
+    BuildButtons GetSheet(ThisWorkbook, SH_SETUP)
 
-    Set wsSetup = EnsureSheet(SH_SETUP)
-    Set wsList = EnsureSheet(SH_LIST)
-
-    BuildSetupSheet wsSetup
-    BuildListHeaders wsList
-    BuildButtons wsSetup
-
-    wsSetup.Activate
+    GetSheet(ThisWorkbook, SH_SETUP).Activate
     MsgBox "Ready." & vbCrLf & vbCrLf & _
            "1. Fill in Client, Project Name and Project Number on this sheet." & vbCrLf & _
            "2. Save this file into the project folder with the schedules." & vbCrLf & _
@@ -57,28 +62,22 @@ Public Sub SetupProject()
     Dim wbTgt As Workbook
     Dim statuses As Variant
     Dim projNameRef As String, projNoRef As String, clientRef As String
-    Dim setupSheetName As String
     Dim backupDir As String
-    Dim log As String, oneLog As String
+    Dim oneLog As String
     Dim done As Long, skipped As Long, failed As Long
     Dim files As Collection, i As Long
+    Dim started As Double
 
     Set wsSetup = GetSheet(ThisWorkbook, SH_SETUP)
     If wsSetup Is Nothing Then
         MsgBox "No Setup sheet. Run InstallTool first.", vbExclamation
         Exit Sub
     End If
-    setupSheetName = wsSetup.Name
-
-    If Len(ThisWorkbook.Path) = 0 Then
-        MsgBox "Save this file into the project folder first.", vbExclamation
-        Exit Sub
-    End If
 
     If Not SetupRefs(wsSetup, projNameRef, projNoRef, clientRef) Then Exit Sub
 
-    If Len(Trim$(wsSetup.Range("B3").Value)) = 0 _
-       Or Len(Trim$(wsSetup.Range("B4").Value)) = 0 Then
+    If Len(Trim$(CStr(wsSetup.Range("B3").Value))) = 0 _
+       Or Len(Trim$(CStr(wsSetup.Range("B4").Value))) = 0 Then
         If MsgBox("Project Name or Project Number is blank on the Setup sheet." & vbCrLf & _
                   "Carry on anyway?", vbQuestion + vbYesNo) = vbNo Then Exit Sub
     End If
@@ -106,11 +105,16 @@ Public Sub SetupProject()
         On Error GoTo 0
     End If
 
-    BeginQuiet
+    On Error GoTo Fail
+    LogStart "Set up / repair schedules"
+    BeginQuiet xlCalculationAutomatic
+    ProgressStart files.Count, "Setting up schedules"
+    started = Timer
 
     For i = 1 To files.Count
         fileName = files(i)
         fullPath = EndSep(folderPath) & fileName
+        ProgressStep i - 1, fileName
 
         If Len(backupDir) > 0 Then
             On Error Resume Next
@@ -118,47 +122,46 @@ Public Sub SetupProject()
             On Error GoTo 0
         End If
 
-        Set wbTgt = Nothing
-        On Error Resume Next
-        Set wbTgt = Workbooks.Open(fileName:=fullPath, ReadOnly:=False, UpdateLinks:=0)
-        On Error GoTo 0
+        Set wbTgt = OpenQuiet(fullPath, False)
 
         If wbTgt Is Nothing Then
             failed = failed + 1
-            log = log & vbCrLf & "FAILED to open: " & fileName
+            LogLine fileName, "FAILED", "Could not open the file."
         ElseIf Not LooksLikeSchedule(wbTgt) Then
             wbTgt.Close SaveChanges:=False
             skipped = skipped + 1
+            LogLine fileName, "Skipped", "No Revision Page - not a schedule."
         Else
             oneLog = ""
             On Error Resume Next
-            oneLog = RepairWorkbook(wbTgt, ThisWorkbook.FullName, setupSheetName, _
+            oneLog = RepairWorkbook(wbTgt, ThisWorkbook.FullName, SH_SETUP, _
                                     projNameRef, projNoRef, clientRef, statuses)
             If Err.Number <> 0 Then
-                oneLog = "ERROR " & Err.Number & " - " & Err.Description
+                LogLine fileName, "FAILED", "Error " & Err.Number & " - " & Err.Description
                 Err.Clear
                 failed = failed + 1
                 wbTgt.Close SaveChanges:=False
             Else
                 wbTgt.Close SaveChanges:=True
                 done = done + 1
+                LogLine fileName, "OK", oneLog
             End If
             On Error GoTo 0
-            If Len(oneLog) > 0 Then log = log & vbCrLf & fileName & ": " & oneLog
         End If
     Next i
 
+    ProgressDone
     wsSetup.Cells(R_OPT_SETUP, 2).Value = Format$(Now, "dd/mm/yyyy hh:nn")
     EndQuiet
 
-    MsgBox "Set up " & done & " schedule(s)." & vbCrLf & _
-           "Skipped (not a schedule): " & skipped & vbCrLf & _
-           "Failed: " & failed & vbCrLf & _
-           IIf(Len(backupDir) > 0, "Backup: " & backupDir & vbCrLf, "") & _
-           IIf(Len(log) > 0, vbCrLf & "Notes:" & log, ""), _
-           vbInformation, "Set up / repair schedules"
+    ShowSummary "Set up / repair schedules", done, skipped, failed, _
+                Timer - started, IIf(Len(backupDir) > 0, "Backup: " & backupDir, "")
 
     RefreshScheduleList
+    Exit Sub
+
+Fail:
+    Recover "Set up / repair schedules", wbTgt
 End Sub
 
 
@@ -167,12 +170,16 @@ End Sub
 ' ===========================================================================
 Public Sub RefreshScheduleList()
     Dim wsSetup As Worksheet, wsList As Worksheet
-    Dim folderPath As String, fileName As String
+    Dim folderPath As String, fileName As String, fullPath As String
     Dim wbTgt As Workbook
     Dim files As Collection, i As Long
     Dim r As Long
     Dim mpiName As String, mpiNo As String, mpiClient As String
-    Dim issues As String
+    Dim keep As Object
+    Dim fullRefresh As Boolean
+    Dim stamp As Double
+    Dim reused As Long, readCount As Long, failed As Long
+    Dim started As Double
 
     Set wsSetup = GetSheet(ThisWorkbook, SH_SETUP)
     Set wsList = EnsureSheet(SH_LIST)
@@ -184,133 +191,170 @@ Public Sub RefreshScheduleList()
     mpiName = Trim$(CStr(wsSetup.Range("B3").Value))
     mpiNo = Trim$(CStr(wsSetup.Range("B4").Value))
     mpiClient = Trim$(CStr(wsSetup.Range("B1").Value))
+    fullRefresh = (UCase$(Trim$(CStr(wsSetup.Cells(R_OPT_FULL, 2).Value))) = "YES")
 
     Set files = ScheduleFiles(folderPath)
+    Set keep = SnapshotList(wsList)
 
-    BeginQuiet
+    On Error GoTo Fail
+    LogStart "Refresh schedule list"
+    ' Manual calculation: the point is to read what is SAVED in each file,
+    ' which is what a recipient sees. It is also far quicker.
+    BeginQuiet xlCalculationManual
+    ProgressStart files.Count, "Reading schedules"
+    started = Timer
+
     BuildListHeaders wsList
-    wsList.Range(wsList.Cells(2, 1), wsList.Cells(wsList.Rows.Count, C_LAST)).Clear
+    wsList.Range(wsList.Cells(2, 1), wsList.Cells(wsList.Rows.Count, C_FILECHK)).Clear
 
     r = 2
     For i = 1 To files.Count
         fileName = files(i)
-        Set wbTgt = Nothing
-        On Error Resume Next
-        Set wbTgt = Workbooks.Open(fileName:=EndSep(folderPath) & fileName, _
-                                   ReadOnly:=True, UpdateLinks:=0)
-        On Error GoTo 0
+        fullPath = EndSep(folderPath) & fileName
+        stamp = FileStamp(fullPath)
+        ProgressStep i - 1, fileName
 
-        If Not wbTgt Is Nothing Then
-            If LooksLikeSchedule(wbTgt) Then
-                wsList.Cells(r, C_FILE).Value = fileName
-                wsList.Cells(r, 3).Value = ReadMeta(wbTgt, "ScheduleName")
-                wsList.Cells(r, 4).Value = ReadMeta(wbTgt, "Project Name")
-                wsList.Cells(r, 5).Value = ReadMeta(wbTgt, "Project Number")
-                wsList.Cells(r, 6).Value = ReadMeta(wbTgt, "Client")
-                wsList.Cells(r, 7).Value = ReadMeta(wbTgt, "DocumentType")
-                wsList.Cells(r, 8).Value = ReadMeta(wbTgt, "Revision")
-                wsList.Cells(r, 9).Value = ReadMeta(wbTgt, "Date")
-                wsList.Cells(r, 10).Value = ReadMeta(wbTgt, "Prepared by")
-                wsList.Cells(r, 11).Value = ReadMeta(wbTgt, "Checked by")
-                wsList.Cells(r, 12).Value = ReadMeta(wbTgt, "Approved by")
-                wsList.Cells(r, 13).Value = ReadMeta(wbTgt, "DocumentNumber")
-                wsList.Cells(r, 14).Value = ReadMeta(wbTgt, "Suitability Status")
-                wsList.Cells(r, 15).Value = ReadMeta(wbTgt, "Suitability Description")
-
-                issues = CheckWorkbook(wbTgt, fileName, mpiName, mpiNo, mpiClient)
-                wsList.Cells(r, C_LAST).Value = issues
-                r = r + 1
+        If Not fullRefresh And CanReuse(keep, fileName, stamp) Then
+            RestoreRow wsList, r, keep(LCase$(fileName))
+            LogLine fileName, "Unchanged", "Not reopened - same as the last refresh."
+            reused = reused + 1
+            r = r + 1
+        Else
+            Set wbTgt = OpenQuiet(fullPath, True)
+            If wbTgt Is Nothing Then
+                failed = failed + 1
+                LogLine fileName, "FAILED", "Could not open the file."
+            Else
+                If LooksLikeSchedule(wbTgt) Then
+                    FillRow wsList, r, fileName, wbTgt
+                    wsList.Cells(r, C_STAMP).Value = stamp
+                    LogLine fileName, "Read", AsText(wsList.Cells(r, C_FILECHK).Value)
+                    readCount = readCount + 1
+                    r = r + 1
+                Else
+                    LogLine fileName, "Skipped", "No Revision Page - not a schedule."
+                End If
+                wbTgt.Close SaveChanges:=False
             End If
-            wbTgt.Close SaveChanges:=False
         End If
     Next i
 
+    RestoreTypedEntries wsList, keep, r - 1
+    ComposeChecks wsList, r - 1, mpiName, mpiNo, mpiClient
     FlagOddOnesOut wsList, r - 1
     ColourIssues wsList, r - 1
+    FormatList wsList, r - 1
 
-    wsList.Columns("A:P").AutoFit
-    If wsList.Columns(C_LAST).ColumnWidth > 60 Then wsList.Columns(C_LAST).ColumnWidth = 60
+    ProgressDone
     wsSetup.Cells(R_OPT_LIST, 2).Value = Format$(Now, "dd/mm/yyyy hh:nn")
-
     EndQuiet
+
+    ShowSummary "Refresh schedule list", readCount, reused, failed, Timer - started, _
+                IIf(reused > 0, reused & " file(s) were unchanged since the last refresh " & _
+                                "and were not reopened.", "")
     wsList.Activate
+    Exit Sub
+
+Fail:
+    Recover "Refresh schedule list", wbTgt
 End Sub
 
 
 ' ===========================================================================
-' Button 3 - append one revision line to every ticked schedule
+' Button 3 - append a revision line to every ticked schedule
+'
+' Each row can carry its own new revision in the "New ..." columns. Anything
+' left blank there falls back to the block on the Setup sheet, so reissuing
+' all 24 on one revision and reissuing 6 of them on different ones are the
+' same operation.
 ' ===========================================================================
 Public Sub AddRevisionToTicked()
     Dim wsSetup As Worksheet, wsList As Worksheet
-    Dim rev As String, status As String, prep As String, chk As String
-    Dim app As String, descr As String
-    Dim issueDate As Variant
-    Dim r As Long, lastRow As Long, n As Long
+    Dim r As Long, lastRow As Long, n As Long, k As Long, j As Long
     Dim folderPath As String, fileName As String
     Dim wbTgt As Workbook
-    Dim res As String, log As String
+    Dim res As String
+    Dim fld(0 To 6) As Variant
+    Dim done As Long, failed As Long, skipped As Long
+    Dim started As Double
 
     Set wsSetup = GetSheet(ThisWorkbook, SH_SETUP)
     Set wsList = GetSheet(ThisWorkbook, SH_LIST)
     If wsSetup Is Nothing Or wsList Is Nothing Then Exit Sub
 
-    rev = Trim$(CStr(wsSetup.Cells(R_REV_FIRST + 0, 2).Value))
-    status = Trim$(CStr(wsSetup.Cells(R_REV_FIRST + 1, 2).Value))
-    issueDate = wsSetup.Cells(R_REV_FIRST + 2, 2).Value
-    prep = Trim$(CStr(wsSetup.Cells(R_REV_FIRST + 3, 2).Value))
-    chk = Trim$(CStr(wsSetup.Cells(R_REV_FIRST + 4, 2).Value))
-    app = Trim$(CStr(wsSetup.Cells(R_REV_FIRST + 5, 2).Value))
-    descr = Trim$(CStr(wsSetup.Cells(R_REV_FIRST + 6, 2).Value))
-
-    If Len(rev) = 0 Or Len(status) = 0 Or Not IsDate(issueDate) Then
-        MsgBox "Fill in at least Revision, Status and a valid Date in the " & _
-               "'New revision' block on the Setup sheet.", vbExclamation
-        Exit Sub
-    End If
-
     lastRow = wsList.Cells(wsList.Rows.Count, C_FILE).End(xlUp).Row
     For r = 2 To lastRow
-        If Len(Trim$(CStr(wsList.Cells(r, C_PICK).Value))) > 0 Then n = n + 1
+        If IsTicked(wsList, r) Then n = n + 1
     Next r
 
     If n = 0 Then
-        MsgBox "Nothing ticked. Put an x in the 'Add?' column on ScheduleList " & _
-               "next to the schedules that are being reissued.", vbExclamation
+        MsgBox "Nothing ticked." & vbCrLf & vbCrLf & _
+               "Put an x in the 'Add?' column next to each schedule being reissued, " & _
+               "and type the new revision in the 'New ...' columns on that row." & vbCrLf & vbCrLf & _
+               "Anything you leave blank is taken from the 'New revision' block on " & _
+               "the Setup sheet, so you can fill in the common bits once.", _
+               vbExclamation, "Add revision"
         Exit Sub
     End If
 
-    If MsgBox("Add revision " & rev & " (" & Format$(issueDate, "dd/mm/yyyy") & ") to " & _
-              n & " schedule(s)?", vbQuestion + vbYesNo) = vbNo Then Exit Sub
+    If MsgBox("Add a revision line to " & n & " schedule(s)?", _
+              vbQuestion + vbYesNo, "Add revision") = vbNo Then Exit Sub
 
     folderPath = SchedulesFolder()
     If Len(folderPath) = 0 Then Exit Sub
-    BeginQuiet
+
+    On Error GoTo Fail
+    LogStart "Add revision"
+    BeginQuiet xlCalculationAutomatic
+    ProgressStart n, "Adding revisions"
+    started = Timer
 
     For r = 2 To lastRow
-        If Len(Trim$(CStr(wsList.Cells(r, C_PICK).Value))) > 0 Then
-            fileName = CStr(wsList.Cells(r, C_FILE).Value)
-            Set wbTgt = Nothing
-            On Error Resume Next
-            Set wbTgt = Workbooks.Open(fileName:=EndSep(folderPath) & fileName, _
-                                       ReadOnly:=False, UpdateLinks:=0)
-            On Error GoTo 0
-            If wbTgt Is Nothing Then
-                log = log & vbCrLf & fileName & ": could not open"
+        If IsTicked(wsList, r) Then
+            fileName = AsText(wsList.Cells(r, C_FILE).Value)
+            k = k + 1
+            ProgressStep k - 1, fileName
+
+            For j = 0 To REV_FIELDS - 1
+                fld(j) = RowOrSetup(wsList, wsSetup, r, j)
+            Next j
+
+            If Len(AsText(fld(0))) = 0 Or Not IsDate(fld(2)) Then
+                skipped = skipped + 1
+                LogLine fileName, "Skipped", _
+                    "Needs at least a revision and a valid date, on the row or on Setup."
             Else
-                res = AppendRevision(wbTgt, rev, status, CDate(issueDate), prep, chk, app, descr)
-                If Len(res) = 0 Then
-                    wbTgt.Close SaveChanges:=True
+                Set wbTgt = OpenQuiet(EndSep(folderPath) & fileName, False)
+                If wbTgt Is Nothing Then
+                    failed = failed + 1
+                    LogLine fileName, "FAILED", "Could not open the file."
                 Else
-                    wbTgt.Close SaveChanges:=False
-                    log = log & vbCrLf & fileName & ": " & res
+                    res = AppendRevision(wbTgt, AsText(fld(0)), AsText(fld(1)), CDate(fld(2)), _
+                                         AsText(fld(3)), AsText(fld(4)), AsText(fld(5)), AsText(fld(6)))
+                    If Len(res) = 0 Then
+                        wbTgt.Close SaveChanges:=True
+                        done = done + 1
+                        LogLine fileName, "OK", "Added " & AsText(fld(0)) & " " & _
+                                Format$(CDate(fld(2)), "dd/mm/yyyy")
+                        ClearRowEntry wsList, r
+                    Else
+                        wbTgt.Close SaveChanges:=False
+                        skipped = skipped + 1
+                        LogLine fileName, "Skipped", res
+                    End If
                 End If
             End If
         End If
     Next r
 
+    ProgressDone
     EndQuiet
-    MsgBox "Done." & IIf(Len(log) > 0, vbCrLf & vbCrLf & "Notes:" & log, ""), vbInformation
+    ShowSummary "Add revision", done, skipped, failed, Timer - started, ""
     RefreshScheduleList
+    Exit Sub
+
+Fail:
+    Recover "Add revision", wbTgt
 End Sub
 
 
@@ -326,48 +370,45 @@ End Sub
 
 
 ' ===========================================================================
-' Checks
+' Reading one schedule into a row
 ' ===========================================================================
-Private Function CheckWorkbook(ByVal wb As Workbook, ByVal fileName As String, _
-                               ByVal mpiName As String, ByVal mpiNo As String, _
-                               ByVal mpiClient As String) As String
+Private Sub FillRow(ByVal wsList As Worksheet, ByVal r As Long, ByVal fileName As String, _
+                    ByVal wb As Workbook)
+    wsList.Cells(r, C_FILE).Value = fileName
+    wsList.Cells(r, 3).Value = ReadMeta(wb, "ScheduleName")
+    wsList.Cells(r, 4).Value = ReadMeta(wb, "Project Name")
+    wsList.Cells(r, 5).Value = ReadMeta(wb, "Project Number")
+    wsList.Cells(r, 6).Value = ReadMeta(wb, "Client")
+    wsList.Cells(r, 7).Value = ReadMeta(wb, "DocumentType")
+    wsList.Cells(r, 8).Value = ReadMeta(wb, "Revision")
+    wsList.Cells(r, 9).Value = ReadMeta(wb, "Date")
+    wsList.Cells(r, 10).Value = ReadMeta(wb, "Prepared by")
+    wsList.Cells(r, 11).Value = ReadMeta(wb, "Checked by")
+    wsList.Cells(r, 12).Value = ReadMeta(wb, "Approved by")
+    wsList.Cells(r, 13).Value = ReadMeta(wb, "DocumentNumber")
+    wsList.Cells(r, 14).Value = ReadMeta(wb, "Suitability Status")
+    wsList.Cells(r, 15).Value = ReadMeta(wb, "Suitability Description")
+    wsList.Cells(r, C_FILECHK).Value = CheckFile(wb)
+End Sub
+
+
+' Checks are about the project being consistent. They never stop a value being
+' read, and there is deliberately no check on the file name: document numbers
+' and schedule names do not have to agree with what the file is called.
+'
+' Split in two so a row reused from the last refresh is still compared against
+' the CURRENT Setup values. Only this half needs the file open.
+Private Function CheckFile(ByVal wb As Workbook) As String
     Dim out As String
-    Dim v As String
     Dim links As Variant, i As Long
-    Dim tail As String, schedName As String
 
     If GetSheet(wb, SH_META) Is Nothing Then
-        CheckWorkbook = "NOT SET UP - no Metadata sheet"
+        CheckFile = "NOT SET UP - no Metadata sheet. "
         Exit Function
     End If
 
-    v = ReadMeta(wb, "Project Name")
-    If Len(mpiName) > 0 And StrComp(v, mpiName, vbTextCompare) <> 0 Then _
-        out = out & "Project Name is '" & v & "', not '" & mpiName & "'. "
-
-    v = ReadMeta(wb, "Project Number")
-    If Len(mpiNo) > 0 And StrComp(v, mpiNo, vbTextCompare) <> 0 Then _
-        out = out & "Project Number is '" & v & "', not '" & mpiNo & "'. "
-
-    v = ReadMeta(wb, "Client")
-    If Len(mpiClient) > 0 And StrComp(v, mpiClient, vbTextCompare) <> 0 Then _
-        out = out & "Client is '" & v & "', not '" & mpiClient & "'. "
-
-    v = ReadMeta(wb, "Revision")
-    If Len(v) = 0 Or InStr(v, "#") > 0 Then out = out & "Revision not resolving. "
-
-    schedName = ReadMeta(wb, "ScheduleName")
-    If Len(schedName) = 0 Then
-        out = out & "Schedule name blank. "
-    Else
-        ' Filename convention: "<doc number> - <schedule name>.xlsx"
-        tail = fileName
-        If InStrRev(tail, ".") > 0 Then tail = Left$(tail, InStrRev(tail, ".") - 1)
-        If InStr(tail, "-") > 0 Then tail = Mid$(tail, InStrRev(tail, "-") + 1)
-        If StrComp(Squash(tail), Squash(schedName), vbTextCompare) <> 0 Then
-            out = out & "File name says '" & Trim$(tail) & "', schedule says '" & schedName & "'. "
-        End If
-    End If
+    If Len(AsText(ReadMeta(wb, "Revision"))) = 0 Then out = out & "Revision is blank. "
+    If Len(AsText(ReadMeta(wb, "ScheduleName"))) = 0 Then out = out & "Schedule name is blank. "
 
     On Error Resume Next
     links = wb.LinkSources(xlExcelLinks)
@@ -380,9 +421,38 @@ Private Function CheckWorkbook(ByVal wb As Workbook, ByVal fileName As String, _
         Next i
     End If
 
-    If Len(out) = 0 Then out = "OK"
-    CheckWorkbook = Trim$(out)
+    CheckFile = out
 End Function
+
+
+' Builds the visible Checks column for every row, from the values on the row
+' plus the file-derived half. Recomputed every refresh, so changing the
+' project name on Setup updates the report even for files that were reused.
+Private Sub ComposeChecks(ByVal wsList As Worksheet, ByVal lastRow As Long, _
+                          ByVal mpiName As String, ByVal mpiNo As String, _
+                          ByVal mpiClient As String)
+    Dim r As Long
+    Dim out As String, v As String
+
+    For r = 2 To lastRow
+        out = AsText(wsList.Cells(r, C_FILECHK).Value)
+
+        v = AsText(wsList.Cells(r, 4).Value)
+        If Len(mpiName) > 0 And StrComp(v, mpiName, vbTextCompare) <> 0 Then _
+            out = out & "Project Name is '" & v & "', not '" & mpiName & "'. "
+
+        v = AsText(wsList.Cells(r, 5).Value)
+        If Len(mpiNo) > 0 And StrComp(v, mpiNo, vbTextCompare) <> 0 Then _
+            out = out & "Project Number is '" & v & "', not '" & mpiNo & "'. "
+
+        v = AsText(wsList.Cells(r, 6).Value)
+        If Len(mpiClient) > 0 And StrComp(v, mpiClient, vbTextCompare) <> 0 Then _
+            out = out & "Client is '" & v & "', not '" & mpiClient & "'. "
+
+        If Len(Trim$(out)) = 0 Then out = "OK"
+        wsList.Cells(r, C_CHECKS).Value = Trim$(out)
+    Next r
+End Sub
 
 
 ' Flags any schedule whose revision or date differs from most of the others.
@@ -398,13 +468,15 @@ Private Sub FlagOddOnesOut(ByVal wsList As Worksheet, ByVal lastRow As Long)
 
     For r = 2 To lastRow
         If Len(modeRev) > 0 Then
-            If StrComp(Trim$(CStr(wsList.Cells(r, 8).Value)), modeRev, vbTextCompare) <> 0 Then
-                Append wsList.Cells(r, C_LAST), "Revision differs from most schedules (" & modeRev & "). "
+            If StrComp(AsText(wsList.Cells(r, 8).Value), modeRev, vbTextCompare) <> 0 Then
+                AppendCheck wsList.Cells(r, C_CHECKS), _
+                            "Revision differs from most schedules (" & modeRev & "). "
             End If
         End If
         If Len(modeDate) > 0 Then
-            If StrComp(Trim$(CStr(wsList.Cells(r, 9).Value)), modeDate, vbTextCompare) <> 0 Then
-                Append wsList.Cells(r, C_LAST), "Date differs from most schedules (" & modeDate & "). "
+            If StrComp(AsText(wsList.Cells(r, 9).Value), modeDate, vbTextCompare) <> 0 Then
+                AppendCheck wsList.Cells(r, C_CHECKS), _
+                            "Date differs from most schedules (" & modeDate & "). "
             End If
         End If
     Next r
@@ -418,7 +490,7 @@ Private Function MostCommon(ByVal ws As Worksheet, ByVal col As Long, ByVal last
 
     Set d = CreateObject("Scripting.Dictionary")
     For r = 2 To lastRow
-        v = Trim$(CStr(ws.Cells(r, col).Value))
+        v = AsText(ws.Cells(r, col).Value)
         If Len(v) > 0 Then d(v) = d(v) + 1
     Next r
     For Each k In d.Keys
@@ -432,9 +504,9 @@ Private Function MostCommon(ByVal ws As Worksheet, ByVal col As Long, ByVal last
 End Function
 
 
-Private Sub Append(ByVal cell As Range, ByVal txt As String)
+Private Sub AppendCheck(ByVal cell As Range, ByVal txt As String)
     Dim cur As String
-    cur = Trim$(CStr(cell.Value))
+    cur = AsText(cell.Value)
     If cur = "OK" Then cur = ""
     cell.Value = Trim$(cur & " " & txt)
 End Sub
@@ -443,19 +515,197 @@ End Sub
 Private Sub ColourIssues(ByVal wsList As Worksheet, ByVal lastRow As Long)
     Dim r As Long
     For r = 2 To lastRow
-        If Trim$(CStr(wsList.Cells(r, C_LAST).Value)) = "OK" Then
-            wsList.Cells(r, C_LAST).Interior.Color = RGB(226, 244, 226)
+        If AsText(wsList.Cells(r, C_CHECKS).Value) = "OK" Then
+            wsList.Cells(r, C_CHECKS).Interior.Color = RGB(226, 244, 226)
         Else
-            wsList.Range(wsList.Cells(r, 1), wsList.Cells(r, C_LAST)).Interior.Color = RGB(255, 235, 200)
-            wsList.Cells(r, C_LAST).Interior.Color = RGB(255, 205, 205)
+            wsList.Range(wsList.Cells(r, 1), wsList.Cells(r, C_CHECKS)).Interior.Color = RGB(255, 235, 200)
+            wsList.Cells(r, C_CHECKS).Interior.Color = RGB(255, 205, 205)
         End If
     Next r
 End Sub
 
 
 ' ===========================================================================
+' Keeping what the user typed across a refresh
+' ===========================================================================
+
+' Everything currently on the list, keyed by lower-case file name.
+Private Function SnapshotList(ByVal wsList As Worksheet) As Object
+    Dim d As Object
+    Dim lastRow As Long, r As Long, c As Long
+    Dim row() As Variant
+    Dim f As String
+
+    Set d = CreateObject("Scripting.Dictionary")
+    Set SnapshotList = d
+
+    lastRow = wsList.Cells(wsList.Rows.Count, C_FILE).End(xlUp).Row
+    If lastRow < 2 Then Exit Function
+
+    For r = 2 To lastRow
+        f = LCase$(AsText(wsList.Cells(r, C_FILE).Value))
+        If Len(f) > 0 Then
+            ReDim row(1 To C_FILECHK)
+            For c = 1 To C_FILECHK
+                row(c) = wsList.Cells(r, c).Value
+            Next c
+            d(f) = row
+        End If
+    Next r
+End Function
+
+
+' A cached row is reusable only when the file has not been touched since.
+Private Function CanReuse(ByVal keep As Object, ByVal fileName As String, _
+                          ByVal stamp As Double) As Boolean
+    Dim row As Variant
+    Dim old As Double
+
+    If stamp = 0 Then Exit Function
+    If Not keep.Exists(LCase$(fileName)) Then Exit Function
+
+    row = keep(LCase$(fileName))
+    If Len(AsText(row(C_DATA_1))) = 0 And Len(AsText(row(C_CHECKS))) = 0 Then Exit Function
+
+    On Error Resume Next
+    old = CDbl(row(C_STAMP))
+    On Error GoTo 0
+
+    CanReuse = (old <> 0) And (Abs(old - stamp) < 0.000001)
+End Function
+
+
+Private Sub RestoreRow(ByVal wsList As Worksheet, ByVal r As Long, ByVal row As Variant)
+    Dim c As Long
+    For c = C_FILE To C_CHECKS
+        wsList.Cells(r, c).Value = row(c)
+    Next c
+    wsList.Cells(r, C_STAMP).Value = row(C_STAMP)
+    wsList.Cells(r, C_FILECHK).Value = row(C_FILECHK)
+End Sub
+
+
+' Puts back the tick and any new-revision text the user had typed, matched by
+' file name so it follows the row even if the order changed.
+Private Sub RestoreTypedEntries(ByVal wsList As Worksheet, ByVal keep As Object, _
+                                ByVal lastRow As Long)
+    Dim r As Long, c As Long
+    Dim f As String
+    Dim row As Variant
+
+    For r = 2 To lastRow
+        f = LCase$(AsText(wsList.Cells(r, C_FILE).Value))
+        If keep.Exists(f) Then
+            row = keep(f)
+            If Len(AsText(wsList.Cells(r, C_PICK).Value)) = 0 Then _
+                wsList.Cells(r, C_PICK).Value = row(C_PICK)
+            For c = C_NEW_FIRST To C_NEW_FIRST + REV_FIELDS - 1
+                If Len(AsText(wsList.Cells(r, c).Value)) = 0 Then wsList.Cells(r, c).Value = row(c)
+            Next c
+        End If
+    Next r
+End Sub
+
+
+Private Function IsTicked(ByVal wsList As Worksheet, ByVal r As Long) As Boolean
+    IsTicked = (Len(AsText(wsList.Cells(r, C_PICK).Value)) > 0)
+End Function
+
+
+' Field n of the new revision: the row first, then the Setup block.
+Private Function RowOrSetup(ByVal wsList As Worksheet, ByVal wsSetup As Worksheet, _
+                            ByVal r As Long, ByVal n As Long) As Variant
+    Dim v As Variant
+    v = wsList.Cells(r, C_NEW_FIRST + n).Value
+    If Len(AsText(v)) > 0 Then
+        RowOrSetup = v
+    Else
+        RowOrSetup = wsSetup.Cells(R_REV_FIRST + n, 2).Value
+    End If
+End Function
+
+
+Private Sub ClearRowEntry(ByVal wsList As Worksheet, ByVal r As Long)
+    wsList.Cells(r, C_PICK).ClearContents
+    wsList.Range(wsList.Cells(r, C_NEW_FIRST), _
+                 wsList.Cells(r, C_NEW_FIRST + REV_FIELDS - 1)).ClearContents
+End Sub
+
+
+' ===========================================================================
+' Log sheet and summary
+' ===========================================================================
+Private Sub LogStart(ByVal what As String)
+    Dim ws As Worksheet
+    Set ws = EnsureSheet(SH_LOG)
+    ws.Cells.Clear
+    ws.Range("A1").Value = what & " - " & Format$(Now, "dd/mm/yyyy hh:nn:ss")
+    ws.Range("A1").Font.Bold = True
+    ws.Range("A2").Value = "File"
+    ws.Range("B2").Value = "Result"
+    ws.Range("C2").Value = "Notes"
+    ws.Range("A2:C2").Font.Bold = True
+    mLogRow = 3
+End Sub
+
+
+Private Sub LogLine(ByVal fileName As String, ByVal result As String, ByVal notes As String)
+    Dim ws As Worksheet
+    Set ws = GetSheet(ThisWorkbook, SH_LOG)
+    If ws Is Nothing Then Exit Sub
+    If mLogRow < 3 Then mLogRow = 3
+
+    ws.Cells(mLogRow, 1).Value = fileName
+    ws.Cells(mLogRow, 2).Value = result
+    ws.Cells(mLogRow, 3).Value = notes
+    Select Case result
+        Case "FAILED": ws.Cells(mLogRow, 2).Interior.Color = RGB(255, 205, 205)
+        Case "Skipped": ws.Cells(mLogRow, 2).Interior.Color = RGB(255, 235, 200)
+        Case Else: ws.Cells(mLogRow, 2).Interior.Color = RGB(226, 244, 226)
+    End Select
+    mLogRow = mLogRow + 1
+End Sub
+
+
+Private Sub ShowSummary(ByVal what As String, ByVal okCount As Long, ByVal otherCount As Long, _
+                        ByVal failCount As Long, ByVal seconds As Double, ByVal extra As String)
+    Dim ws As Worksheet
+    Dim msg As String
+    Dim icon As Long
+
+    Set ws = GetSheet(ThisWorkbook, SH_LOG)
+    If Not ws Is Nothing Then ws.Columns("A:C").AutoFit
+
+    msg = okCount & " succeeded" & vbCrLf & _
+          otherCount & " skipped / unchanged" & vbCrLf & _
+          failCount & " failed" & vbCrLf & vbCrLf & _
+          "Took " & Duration(seconds) & "."
+
+    If Len(extra) > 0 Then msg = msg & vbCrLf & vbCrLf & extra
+    msg = msg & vbCrLf & vbCrLf & "Line by line detail is on the Log sheet."
+
+    icon = IIf(failCount > 0, vbExclamation, vbInformation)
+    MsgBox msg, icon, what
+End Sub
+
+
+' ===========================================================================
 ' Plumbing
 ' ===========================================================================
+
+' Opens a workbook without link prompts, and re-asserts the quiet settings
+' afterwards because opening a file can turn screen updating back on.
+Private Function OpenQuiet(ByVal fullPath As String, ByVal readOnlyMode As Boolean) As Workbook
+    Dim wb As Workbook
+    On Error Resume Next
+    Set wb = Workbooks.Open(fileName:=fullPath, ReadOnly:=readOnlyMode, UpdateLinks:=0)
+    If Err.Number <> 0 Then Err.Clear
+    On Error GoTo 0
+    Application.ScreenUpdating = False
+    Set OpenQuiet = wb
+End Function
+
+
 ' Where the schedules live, as a path the file system can actually read.
 '
 ' Order: the Setup sheet override, then this workbook's own folder. If that
@@ -568,7 +818,8 @@ End Function
 
 ' The suitability list pushed into every schedule: whatever is typed in
 ' column F of the Setup sheet, or if that is empty, the union of what the
-' schedules already use (so nothing is invented).
+' schedules already use (so nothing is invented). Only the first run pays for
+' the extra pass; after that column F is filled in.
 Private Function GatherStatuses(ByVal wsSetup As Worksheet, ByVal files As Collection, _
                                 ByVal folderPath As String) As Variant
     Dim bag As Object
@@ -588,21 +839,19 @@ Private Function GatherStatuses(ByVal wsSetup As Worksheet, ByVal files As Colle
     Next r
 
     If bag.Count = 0 Then
-        BeginQuiet
+        BeginQuiet xlCalculationManual
+        ProgressStart files.Count, "Collecting suitability codes"
         For i = 1 To files.Count
-            Set wbTgt = Nothing
-            On Error Resume Next
-            Set wbTgt = Workbooks.Open(fileName:=EndSep(folderPath) & files(i), _
-                                       ReadOnly:=True, UpdateLinks:=0)
-            On Error GoTo 0
+            ProgressStep i - 1, files(i)
+            Set wbTgt = OpenQuiet(EndSep(folderPath) & files(i), True)
             If Not wbTgt Is Nothing Then
                 CollectStatuses wbTgt, bag
                 wbTgt.Close SaveChanges:=False
             End If
         Next i
+        ProgressDone
         EndQuiet
 
-        ' Write them back so the list becomes editable in one place.
         wsSetup.Range("F1").Value = "Suitability Codes"
         r = 2
         For Each k In bag.Keys
@@ -648,12 +897,15 @@ Private Sub BuildSetupSheet(ByVal ws As Worksheet)
     ws.Cells(R_OPT_AUTO, 1).Value = "Refresh list on open"
     ws.Cells(R_OPT_SETUP, 1).Value = "Last setup run"
     ws.Cells(R_OPT_LIST, 1).Value = "Last list refresh"
+    ws.Cells(R_OPT_FULL, 1).Value = "Full refresh every time"
 
     If Len(Trim$(CStr(ws.Cells(R_OPT_BACKUP, 2).Value))) = 0 Then ws.Cells(R_OPT_BACKUP, 2).Value = "Yes"
     If Len(Trim$(CStr(ws.Cells(R_OPT_AUTO, 2).Value))) = 0 Then ws.Cells(R_OPT_AUTO, 2).Value = "No"
+    If Len(Trim$(CStr(ws.Cells(R_OPT_FULL, 2).Value))) = 0 Then ws.Cells(R_OPT_FULL, 2).Value = "No"
     ws.Cells(R_OPT_FOLDER, 3).Value = "(blank = the folder this file is saved in)"
+    ws.Cells(R_OPT_FULL, 3).Value = "(No = only reopen files that changed since the last refresh)"
 
-    ws.Cells(13, 1).Value = "New revision (used by 'Add revision to ticked')"
+    ws.Cells(R_REV_FIRST - 1, 1).Value = "New revision (fallback for blank cells on ScheduleList)"
     ws.Cells(R_REV_FIRST + 0, 1).Value = "Revision"
     ws.Cells(R_REV_FIRST + 1, 1).Value = "Status"
     ws.Cells(R_REV_FIRST + 2, 1).Value = "Date"
@@ -665,8 +917,8 @@ Private Sub BuildSetupSheet(ByVal ws As Worksheet)
 
     If Len(Trim$(CStr(ws.Range("F1").Value))) = 0 Then ws.Range("F1").Value = "Suitability Codes"
 
-    ws.Range("A1,A3,A4,A6,A13").Font.Bold = True
-    ws.Range("F1").Font.Bold = True
+    ws.Range("A1,A3,A4,A6,F1").Font.Bold = True
+    ws.Cells(R_REV_FIRST - 1, 1).Font.Bold = True
     ws.Columns("A").AutoFit
     If ws.Columns("B").ColumnWidth < 30 Then ws.Columns("B").ColumnWidth = 30
 End Sub
@@ -683,16 +935,55 @@ Private Sub BuildListHeaders(ByVal ws As Worksheet)
 
     h = Array("Add?", "FileName", "ScheduleName", "ProjectName", "ProjectNo", _
               "Client", "DocType", "Revision", "Date", "PrBy", "ChBy", "ApBy", _
-              "DocumentNo", "SuitabilitySt", "SuitabilityDs", "Checks")
+              "DocumentNo", "SuitabilitySt", "SuitabilityDs", "Checks", _
+              "New Rev", "New Status", "New Date", "New PrBy", "New ChBy", _
+              "New ApBy", "New Description", "_Stamp", "_FileChecks")
 
     For i = 0 To UBound(h)
         ws.Cells(1, i + 1).Value = h(i)
     Next i
+
     ws.Rows(1).Font.Bold = True
-    ws.Rows(1).Interior.Color = RGB(230, 230, 230)
+    ws.Range(ws.Cells(1, 1), ws.Cells(1, C_CHECKS)).Interior.Color = RGB(230, 230, 230)
+    ws.Range(ws.Cells(1, C_NEW_FIRST), ws.Cells(1, C_NEW_FIRST + REV_FIELDS - 1)). _
+        Interior.Color = RGB(214, 232, 255)
+    ws.Columns(C_STAMP).Hidden = True
+    ws.Columns(C_FILECHK).Hidden = True
 
     On Error Resume Next
-    If Not ws.AutoFilterMode Then ws.Range("A1:P1").AutoFilter
+    If Not ws.AutoFilterMode Then ws.Range(ws.Cells(1, 1), ws.Cells(1, C_CHECKS)).AutoFilter
+    On Error GoTo 0
+End Sub
+
+
+Private Sub FormatList(ByVal ws As Worksheet, ByVal lastRow As Long)
+    Dim wsSetup As Worksheet
+    Dim codes As Long
+    Dim rng As Range
+
+    ws.Columns(9).NumberFormat = "dd/mm/yyyy"
+    ws.Columns(C_NEW_FIRST + 2).NumberFormat = "dd/mm/yyyy"
+
+    ws.Range(ws.Cells(1, 1), ws.Cells(1, C_CHECKS)).EntireColumn.AutoFit
+    If ws.Columns(C_CHECKS).ColumnWidth > 60 Then ws.Columns(C_CHECKS).ColumnWidth = 60
+    ws.Columns(C_STAMP).Hidden = True
+    ws.Columns(C_FILECHK).Hidden = True
+
+    If lastRow < 2 Then Exit Sub
+
+    ' Dropdown of suitability codes on the New Status column.
+    Set wsSetup = GetSheet(ThisWorkbook, SH_SETUP)
+    If wsSetup Is Nothing Then Exit Sub
+    codes = wsSetup.Cells(wsSetup.Rows.Count, 6).End(xlUp).Row
+    If codes < 2 Then Exit Sub
+
+    Set rng = ws.Range(ws.Cells(2, C_NEW_FIRST + 1), ws.Cells(lastRow, C_NEW_FIRST + 1))
+    On Error Resume Next
+    rng.Validation.Delete
+    rng.Validation.Add Type:=xlValidateList, AlertStyle:=xlValidAlertStop, _
+        Operator:=xlBetween, Formula1:="=" & SheetRef(SH_SETUP) & "!$F$2:$F$" & codes
+    rng.Validation.IgnoreBlank = True
+    rng.Validation.InCellDropdown = True
     On Error GoTo 0
 End Sub
 
@@ -719,26 +1010,41 @@ Private Sub BuildButtons(ByVal ws As Worksheet)
 End Sub
 
 
-Private Sub BeginQuiet()
+' Always puts Excel back the way it was. Without this an unexpected error
+' would leave screen updating off and the whole application looking frozen.
+Private Sub Recover(ByVal what As String, ByRef wbTgt As Workbook)
+    Dim n As Long, d As String
+
+    n = Err.Number
+    d = Err.Description
+
+    On Error Resume Next
+    If Not wbTgt Is Nothing Then wbTgt.Close SaveChanges:=False
+    ProgressDone
+    EndQuiet
+    On Error GoTo 0
+
+    MsgBox what & " stopped." & vbCrLf & vbCrLf & _
+           "Error " & n & ": " & d & vbCrLf & vbCrLf & _
+           "Nothing else was changed. What had been done up to that point is " & _
+           "on the Log sheet.", vbExclamation, what
+End Sub
+
+
+Private Sub BeginQuiet(ByVal calcMode As XlCalculation)
     Application.ScreenUpdating = False
     Application.DisplayAlerts = False
     Application.EnableEvents = False
     Application.AskToUpdateLinks = False
-    Application.Calculation = xlCalculationAutomatic
+    Application.Calculation = calcMode
 End Sub
 
 
 Private Sub EndQuiet()
+    Application.Calculation = xlCalculationAutomatic
     Application.ScreenUpdating = True
     Application.DisplayAlerts = True
     Application.EnableEvents = True
     Application.AskToUpdateLinks = True
+    Application.StatusBar = False
 End Sub
-
-
-' Compares text ignoring spaces, underscores and case.
-Private Function Squash(ByVal s As String) As String
-    s = Replace$(s, " ", "")
-    s = Replace$(s, "_", "")
-    Squash = LCase$(s)
-End Function
