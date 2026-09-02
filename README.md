@@ -77,7 +77,7 @@ file: blanket-revving schedules that didn't change is its own QA problem.
 
 | Cell | Meaning |
 |---|---|
-| `B7` Schedules folder | blank = the folder this file is saved in |
+| `B7` Schedules folder | blank = the folder this file is saved in. Filled in automatically if the tool has to ask |
 | `B8` Backup before changes | `Yes` / `No` |
 | `B9` Refresh list on open | `No` by default. `Yes` opens every schedule at startup, which is slow with 20+ files |
 | `F1:F...` Suitability Codes | the dropdown pushed into every schedule's revision table. Populated from what your schedules already use on the first run; edit it here and re-run setup |
@@ -114,11 +114,43 @@ Rows 7-14 exist so the MPI can read one predictable sheet per schedule instead
 of hunting for labels in a formatted page. Rows 2-6 keep the header names the
 old files already used, so nothing existing breaks.
 
+## Revision ordering
+
+The title block reads the latest revision out of the revision table, ranking by
+family first and then by number:
+
+| Family | Meaning | Priority |
+|---|---|---|
+| `P` | Preliminary | 1 |
+| `C` | Construction | 2 |
+| `AF` | As fitted | 3 |
+
+So `AF01` beats `C09` beats `P12`. The list lives in one place, the
+`REV_PREFIXES` constant at the top of `modSchedule.bas`. Add a family there and
+re-run **Set up / repair schedules** to push the new formulas into every file.
+
+## Running from Filery / SharePoint
+
+When a workbook is opened straight from Filery, SharePoint or a browser, its
+path is a URL (`https://...`) rather than a drive path, and Excel's file
+functions cannot read a URL. That is what caused `Run-time error 52`.
+
+The tool now:
+
+1. uses the folder in `Setup!B7` if it is set and readable,
+2. otherwise tries to resolve the URL to your local synced folder,
+3. otherwise asks you to pick the folder once and writes it into `Setup!B7`.
+
+**For the cleanest links, open `MAINPROJECTINFO.xlsm` from the synced folder in
+File Explorer, not from the browser.** When both the MPI and the schedules are
+opened from the same local folder, Excel stores the link as a plain file name,
+which is what survives a Filery export and re-import. If the MPI is open from a
+URL, the tool still works but warns you that the links will be written as full
+URLs.
+
 ## Known limits
 
-- Revision ordering uses the existing `LET(...)` formulas, which take the
-  highest number after stripping `P`. A `C01` construction revision would sort
-  as 1 and lose to `P04`. Fine while everything is `Pnn`.
 - `DocumentNumber` comes from `CELL("filename")`, so it is blank until the file
   has been saved once.
 - The title cell is located within the first 60 rows / 10 columns of a sheet.
+- Revision numbers above 999 would collide across families.

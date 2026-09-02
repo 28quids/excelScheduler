@@ -84,10 +84,7 @@ Public Sub SetupProject()
     End If
 
     folderPath = SchedulesFolder()
-    If Len(Dir(folderPath, vbDirectory)) = 0 Then
-        MsgBox "Folder not found:" & vbCrLf & folderPath, vbExclamation
-        Exit Sub
-    End If
+    If Len(folderPath) = 0 Then Exit Sub
 
     Set files = ScheduleFiles(folderPath)
     If files.Count = 0 Then
@@ -95,11 +92,12 @@ Public Sub SetupProject()
         Exit Sub
     End If
 
-    If MsgBox(files.Count & " workbook(s) will be opened, relinked to this file and saved." & vbCrLf & vbCrLf & _
+    If MsgBox(PathFormWarning(folderPath) & _
+              files.Count & " workbook(s) will be opened, relinked to this file and saved." & vbCrLf & vbCrLf & _
               folderPath & vbCrLf & vbCrLf & "Continue?", _
               vbQuestion + vbYesNo, "Set up / repair schedules") = vbNo Then Exit Sub
 
-    statuses = GatherStatuses(wsSetup, files)
+    statuses = GatherStatuses(wsSetup, files, folderPath)
 
     If UCase$(Trim$(CStr(wsSetup.Cells(R_OPT_BACKUP, 2).Value))) <> "NO" Then
         backupDir = EndSep(folderPath) & "_backup " & Format$(Now, "yyyy-mm-dd hh-nn")
@@ -181,10 +179,7 @@ Public Sub RefreshScheduleList()
     If wsSetup Is Nothing Then Exit Sub
 
     folderPath = SchedulesFolder()
-    If Len(Dir(folderPath, vbDirectory)) = 0 Then
-        MsgBox "Folder not found:" & vbCrLf & folderPath, vbExclamation
-        Exit Sub
-    End If
+    If Len(folderPath) = 0 Then Exit Sub
 
     mpiName = Trim$(CStr(wsSetup.Range("B3").Value))
     mpiNo = Trim$(CStr(wsSetup.Range("B4").Value))
@@ -288,6 +283,7 @@ Public Sub AddRevisionToTicked()
               n & " schedule(s)?", vbQuestion + vbYesNo) = vbNo Then Exit Sub
 
     folderPath = SchedulesFolder()
+    If Len(folderPath) = 0 Then Exit Sub
     BeginQuiet
 
     For r = 2 To lastRow
@@ -323,7 +319,8 @@ Public Sub Auto_Open()
     Set wsSetup = GetSheet(ThisWorkbook, SH_SETUP)
     If wsSetup Is Nothing Then Exit Sub
     If UCase$(Trim$(CStr(wsSetup.Cells(R_OPT_AUTO, 2).Value))) = "YES" Then
-        RefreshScheduleList
+        ' Never nag on startup - if the folder is not known, just skip.
+        If Len(SchedulesFolder(False)) > 0 Then RefreshScheduleList
     End If
 End Sub
 
@@ -459,32 +456,88 @@ End Sub
 ' ===========================================================================
 ' Plumbing
 ' ===========================================================================
-Private Function SchedulesFolder() As String
+' Where the schedules live, as a path the file system can actually read.
+'
+' Order: the Setup sheet override, then this workbook's own folder. If that
+' is a SharePoint / OneDrive / Filery URL it is resolved to the local synced
+' folder; if it cannot be resolved the user picks it once and the answer is
+' written back to the Setup sheet. Returns "" if the user cancels.
+Private Function SchedulesFolder(Optional ByVal askIfUnknown As Boolean = True) As String
     Dim wsSetup As Worksheet
-    Dim v As String
+    Dim v As String, resolved As String
 
     Set wsSetup = GetSheet(ThisWorkbook, SH_SETUP)
-    If Not wsSetup Is Nothing Then v = Trim$(CStr(wsSetup.Cells(R_OPT_FOLDER, 2).Value))
-    If Len(v) = 0 Then v = ThisWorkbook.Path
-    SchedulesFolder = EndSep(v)
+
+    If Not wsSetup Is Nothing Then
+        v = Trim$(CStr(wsSetup.Cells(R_OPT_FOLDER, 2).Value))
+        If Len(v) > 0 Then
+            If FolderExists(v) Then
+                SchedulesFolder = EndSep(v)
+                Exit Function
+            End If
+            resolved = ResolveLocalFolder(v)
+            If Len(resolved) > 0 Then
+                SchedulesFolder = EndSep(resolved)
+                Exit Function
+            End If
+        End If
+    End If
+
+    v = ThisWorkbook.Path
+    If FolderExists(v) Then
+        SchedulesFolder = EndSep(v)
+        Exit Function
+    End If
+
+    resolved = ResolveLocalFolder(v)
+    If Len(resolved) > 0 Then
+        If Not wsSetup Is Nothing Then wsSetup.Cells(R_OPT_FOLDER, 2).Value = resolved
+        SchedulesFolder = EndSep(resolved)
+        Exit Function
+    End If
+
+    If Not askIfUnknown Then Exit Function
+
+    MsgBox "This file is open from a location Excel cannot browse:" & vbCrLf & vbCrLf & _
+           IIf(Len(v) > 0, v, "(not saved yet)") & vbCrLf & vbCrLf & _
+           "That happens when it is opened straight from Filery, SharePoint or a " & _
+           "browser rather than from the synced folder on this PC." & vbCrLf & vbCrLf & _
+           "Pick the folder holding the schedules. It will be remembered on the " & _
+           "Setup sheet.", vbInformation, "Where are the schedules?"
+
+    resolved = PickFolder("Folder containing the schedules")
+    If Len(resolved) = 0 Then Exit Function
+
+    If Not wsSetup Is Nothing Then wsSetup.Cells(R_OPT_FOLDER, 2).Value = resolved
+    SchedulesFolder = EndSep(resolved)
 End Function
 
 
-' Every .xls* in the folder except this workbook, temp files and backups.
+' Every workbook in the folder except this one.
 Private Function ScheduleFiles(ByVal folderPath As String) As Collection
-    Dim c As New Collection
-    Dim f As String
+    Dim all As Collection, c As New Collection
+    Dim i As Long
 
-    f = Dir(EndSep(folderPath) & "*.xls*")
-    Do While Len(f) > 0
-        If Left$(f, 2) <> "~$" _
-           And StrComp(f, ThisWorkbook.Name, vbTextCompare) <> 0 Then
-            c.Add f
-        End If
-        f = Dir()
-    Loop
+    Set all = FolderWorkbooks(folderPath)
+    For i = 1 To all.Count
+        If StrComp(all(i), ThisWorkbook.Name, vbTextCompare) <> 0 Then c.Add all(i)
+    Next i
 
     Set ScheduleFiles = c
+End Function
+
+
+' Warns once when this workbook is open from a URL but the schedules are being
+' written from a local folder, because Excel then stores the link to this file
+' as a full URL instead of just its name.
+Private Function PathFormWarning(ByVal folderPath As String) As String
+    If Not IsUrlPath(ThisWorkbook.Path) Then Exit Function
+    PathFormWarning = _
+        "Note: this file is open from a URL (" & ThisWorkbook.Path & ") while the " & _
+        "schedules are in " & folderPath & "." & vbCrLf & _
+        "The links will be written as full URLs rather than as a plain file name. " & _
+        "They work, but to keep them relative, open MAINPROJECTINFO from the synced " & _
+        "folder in File Explorer and run this again." & vbCrLf & vbCrLf
 End Function
 
 
@@ -516,13 +569,13 @@ End Function
 ' The suitability list pushed into every schedule: whatever is typed in
 ' column F of the Setup sheet, or if that is empty, the union of what the
 ' schedules already use (so nothing is invented).
-Private Function GatherStatuses(ByVal wsSetup As Worksheet, ByVal files As Collection) As Variant
+Private Function GatherStatuses(ByVal wsSetup As Worksheet, ByVal files As Collection, _
+                                ByVal folderPath As String) As Variant
     Dim bag As Object
     Dim r As Long, lastRow As Long
     Dim v As String
     Dim i As Long
     Dim wbTgt As Workbook
-    Dim folderPath As String
     Dim out() As String
     Dim k As Variant, n As Long
 
@@ -535,7 +588,6 @@ Private Function GatherStatuses(ByVal wsSetup As Worksheet, ByVal files As Colle
     Next r
 
     If bag.Count = 0 Then
-        folderPath = SchedulesFolder()
         BeginQuiet
         For i = 1 To files.Count
             Set wbTgt = Nothing

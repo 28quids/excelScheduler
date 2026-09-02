@@ -17,6 +17,11 @@ Option Explicit
 ' the ScheduleList reads back, so do not rename them casually.
 Private Const META_LAST_ROW As Long = 14
 
+' Revision families in priority order, lowest first. "P" preliminary,
+' "C" construction, "AF" as fitted, so AF01 beats C09 beats P12.
+' Add a family here and re-run setup to push it into every schedule.
+Public Const REV_PREFIXES As String = "P,C,AF"
+
 
 ' Repairs / sets up one open schedule workbook. Returns a log string
 ' (empty means "nothing worth reporting"). Never saves - the caller decides.
@@ -111,6 +116,9 @@ Public Function RepairWorkbook(ByVal wbTgt As Workbook, _
 
     ' --- Schedule sheet title -------------------------------------------
     log = log & LinkScheduleSheetTitle(wbTgt, wsMeta, wsRev)
+
+    ' --- Revision Page title block, driven by the revision table ---------
+    log = log & WriteRevisionFormulas(wsRev)
 
     ' --- Suitability dropdown, kept local so it survives without the MPI --
     log = log & WriteStatusList(wsMeta, wsRev, statuses)
@@ -451,6 +459,100 @@ Private Function ReferencedWorkbooks(ByVal wb As Workbook) As Object
     Next ws
 
     Set ReferencedWorkbooks = d
+End Function
+
+
+' Rewrites the seven title-block cells that summarise the revision table, so
+' that they rank revisions by family (AF > C > P) and then by number.
+Private Function WriteRevisionFormulas(ByVal wsRev As Worksheet) As String
+    Dim lo As ListObject
+    Dim log As String
+
+    On Error Resume Next
+    Set lo = wsRev.ListObjects("RevisionTable")
+    On Error GoTo 0
+    If lo Is Nothing Then
+        WriteRevisionFormulas = "No 'RevisionTable' - revision formulas left alone. "
+        Exit Function
+    End If
+
+    WriteIfLabelled wsRev, "Revision", RevFormula("XLOOKUP(MAX(rank),rank,rev)", False), log
+    WriteIfLabelled wsRev, "Date", RevFormula("XLOOKUP(MAX(rank),rank,RevisionTable[Date])", False), log
+    WriteIfLabelled wsRev, "Prepared by", RevFormula("XLOOKUP(MAX(rank),rank,RevisionTable[Prepared by])", False), log
+    WriteIfLabelled wsRev, "Checked by", RevFormula("XLOOKUP(MAX(rank),rank,RevisionTable[Checked by])", False), log
+    WriteIfLabelled wsRev, "Approved by", RevFormula("XLOOKUP(MAX(rank),rank,RevisionTable[Approved by])", False), log
+    WriteIfLabelled wsRev, "Suitability Status", _
+        RevFormula("IFERROR(LEFT(stat,FIND("" - "",stat)-1),stat)", True), log
+    WriteIfLabelled wsRev, "Suitability Description", _
+        RevFormula("IFERROR(TEXTAFTER(stat,"" - ""),"""")", True), log
+
+    WriteRevisionFormulas = log
+End Function
+
+
+' Builds the shared LET wrapper that ranks the revision table, then returns
+' whatever the caller asked for from the winning row.
+'
+'   num   the digits, e.g. AF01 -> 1
+'   pri   the family, P=1 C=2 AF=3, anything unrecognised = 0
+'   rank  pri*1000 + num, so AF01 (3001) beats C09 (2009) beats P12 (1012)
+Private Function RevFormula(ByVal resultExpr As String, ByVal needStatus As Boolean) As String
+    Dim names As Variant
+    Dim order As Variant
+    Dim subs As String, prio As String, closers As String
+    Dim i As Long, idx As Long
+
+    names = Split(REV_PREFIXES, ",")
+    order = ByLengthDesc(names)
+
+    subs = "t"
+    For i = LBound(order) To UBound(order)
+        idx = order(i)
+        subs = "SUBSTITUTE(" & subs & ",""" & UCase$(Trim$(names(idx))) & ""","""")"
+    Next i
+
+    For i = LBound(order) To UBound(order)
+        idx = order(i)
+        prio = prio & "IF(LEFT(t," & Len(Trim$(names(idx))) & ")=""" & _
+               UCase$(Trim$(names(idx))) & """," & (idx + 1) & ","
+        closers = closers & ")"
+    Next i
+    prio = prio & "0" & closers
+
+    RevFormula = "=LET(rev,RevisionTable[Revision]," & _
+                 "t,UPPER(TRIM(rev))," & _
+                 "num,IFERROR(--" & subs & ",0)," & _
+                 "pri," & prio & "," & _
+                 "rank,pri*1000+num,"
+    If needStatus Then
+        RevFormula = RevFormula & "stat,INDEX(RevisionTable[Status],XMATCH(MAX(rank),rank)),"
+    End If
+    RevFormula = RevFormula & resultExpr & ")"
+End Function
+
+
+' Indexes into arr, longest string first, so "AF" is stripped and matched
+' before "A" would be if someone ever adds one.
+Private Function ByLengthDesc(ByVal arr As Variant) As Variant
+    Dim idx() As Long
+    Dim i As Long, j As Long, t As Long
+    Dim n As Long
+
+    n = UBound(arr) - LBound(arr) + 1
+    ReDim idx(0 To n - 1)
+    For i = 0 To n - 1
+        idx(i) = i
+    Next i
+
+    For i = 0 To n - 2
+        For j = 0 To n - 2 - i
+            If Len(Trim$(arr(idx(j)))) < Len(Trim$(arr(idx(j + 1)))) Then
+                t = idx(j): idx(j) = idx(j + 1): idx(j + 1) = t
+            End If
+        Next j
+    Next i
+
+    ByLengthDesc = idx
 End Function
 
 
