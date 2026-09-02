@@ -93,7 +93,44 @@ succeeded so the list is ready for the next round.
 | `B8` Backup before changes | `Yes` / `No` |
 | `B9` Refresh list on open | `No` by default. `Yes` reads every schedule at startup |
 | `B12` Full refresh every time | `No` by default, which reopens only files whose modified date changed since the last refresh. `Yes` always reopens everything |
-| `F1:F...` Suitability Codes | the dropdown pushed into every schedule's revision table. Populated from what your schedules already use on the first run; edit it here and re-run setup |
+| `F1:F...` Suitability Codes | the dropdown pushed into every schedule's Metadata sheet and revision table. Seeded with the ISO 19650 codes below; edit here and re-run setup to push the change to all files |
+
+## Suitability codes
+
+Held in one place, column F of the Setup sheet, and pushed into each schedule's
+Metadata sheet (`D2` down) by the repair. The revision table's Status column
+picks from that local list, so it still works with the MPI nowhere in sight.
+
+The format is `<code> - <description>`. The title block splits on the ` - ` to
+fill Suitability Status and Suitability Description, so **no description may
+contain a hyphen surrounded by spaces**.
+
+| Code | Description |
+|---|---|
+| `S0` | Work in Progress |
+| `S1` | Suitable for Coordination |
+| `S2` | Suitable for Information |
+| `S3` | Suitable for Review and Comment |
+| `S4` | Suitable for Stage Approval |
+| `S6` | Suitable for PIM Authorisation |
+| `S7` | Suitable for AIM Authorisation |
+| `A1`, `A2` | Authorised and Accepted |
+| `B1`, `B2` | Published with Comments |
+
+Two decisions worth knowing about:
+
+- **`S4` replaces `S5` as the approval status.** ISO 19650 leaves `S5` to
+  project guidance, which is exactly why it caused confusion here.
+- **`S5` is not in the list.** Nothing useful can be said about it on a shared
+  dropdown. If a project genuinely needs it, add a row to column F.
+
+Existing revision lines are never rewritten. A row that says
+`S5 - Suitable for Client Acceptance` keeps saying that, which is correct: the
+revision table is a record of what was actually issued. The list only governs
+what the dropdown offers from here on.
+
+`A1`/`A2` and `B1`/`B2` share a description on purpose. The number is the
+issue count, not a different status. Add `A3`, `B3` and so on as needed.
 
 ## What a schedule must contain
 
@@ -130,7 +167,8 @@ old files already used, so nothing existing breaks.
 ## Progress, speed and the log
 
 Both long-running buttons show progress and a time estimate on the status bar
-(bottom-left), e.g. `Setting up schedules: 7 of 24 (29%) - about 1m 20s left -
+(bottom-left of the Excel window, and there is a note saying so under the
+buttons on the Setup sheet), e.g. `Setting up schedules: 7 of 24 (29%) - about 1m 20s left -
 Radiators Schedule.xlsx`. Every run writes a line per file to the **Log** sheet
 and finishes with a summary box: how many succeeded, were skipped, or failed,
 and how long it took.

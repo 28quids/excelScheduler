@@ -39,12 +39,27 @@ Private mLogRow As Long
 ' One-time install
 ' ===========================================================================
 Public Sub InstallTool()
-    BuildSetupSheet EnsureSheet(SH_SETUP)
+    Dim wsSetup As Worksheet
+    Dim hadCodes As Long
+
+    Set wsSetup = EnsureSheet(SH_SETUP)
+    hadCodes = SuitabilityCount(wsSetup)
+    BuildSetupSheet wsSetup
     BuildListHeaders EnsureSheet(SH_LIST)
     EnsureSheet(SH_LOG).Cells.Clear
-    BuildButtons GetSheet(ThisWorkbook, SH_SETUP)
+    BuildButtons wsSetup
 
-    GetSheet(ThisWorkbook, SH_SETUP).Activate
+    If hadCodes > 0 Then
+        If MsgBox("Replace the suitability codes in column F with the ISO 19650 " & _
+                  "defaults?" & vbCrLf & vbCrLf & _
+                  "Existing revision lines keep whatever they already say. This only " & _
+                  "changes what the dropdown offers from now on.", _
+                  vbQuestion + vbYesNo, "Suitability codes") = vbYes Then
+            SeedSuitabilityCodes wsSetup
+        End If
+    End If
+
+    wsSetup.Activate
     MsgBox "Ready." & vbCrLf & vbCrLf & _
            "1. Fill in Client, Project Name and Project Number on this sheet." & vbCrLf & _
            "2. Save this file into the project folder with the schedules." & vbCrLf & _
@@ -96,7 +111,7 @@ Public Sub SetupProject()
               folderPath & vbCrLf & vbCrLf & "Continue?", _
               vbQuestion + vbYesNo, "Set up / repair schedules") = vbNo Then Exit Sub
 
-    statuses = GatherStatuses(wsSetup, files, folderPath)
+    statuses = GatherStatuses(wsSetup)
 
     If UCase$(Trim$(CStr(wsSetup.Cells(R_OPT_BACKUP, 2).Value))) <> "NO" Then
         backupDir = EndSep(folderPath) & "_backup " & Format$(Now, "yyyy-mm-dd hh-nn")
@@ -820,13 +835,10 @@ End Function
 ' column F of the Setup sheet, or if that is empty, the union of what the
 ' schedules already use (so nothing is invented). Only the first run pays for
 ' the extra pass; after that column F is filled in.
-Private Function GatherStatuses(ByVal wsSetup As Worksheet, ByVal files As Collection, _
-                                ByVal folderPath As String) As Variant
+Private Function GatherStatuses(ByVal wsSetup As Worksheet) As Variant
     Dim bag As Object
     Dim r As Long, lastRow As Long
     Dim v As String
-    Dim i As Long
-    Dim wbTgt As Workbook
     Dim out() As String
     Dim k As Variant, n As Long
 
@@ -839,26 +851,12 @@ Private Function GatherStatuses(ByVal wsSetup As Worksheet, ByVal files As Colle
     Next r
 
     If bag.Count = 0 Then
-        BeginQuiet xlCalculationManual
-        ProgressStart files.Count, "Collecting suitability codes"
-        For i = 1 To files.Count
-            ProgressStep i - 1, files(i)
-            Set wbTgt = OpenQuiet(EndSep(folderPath) & files(i), True)
-            If Not wbTgt Is Nothing Then
-                CollectStatuses wbTgt, bag
-                wbTgt.Close SaveChanges:=False
-            End If
-        Next i
-        ProgressDone
-        EndQuiet
-
-        wsSetup.Range("F1").Value = "Suitability Codes"
-        r = 2
-        For Each k In bag.Keys
-            wsSetup.Cells(r, 6).Value = k
-            r = r + 1
-        Next k
-        wsSetup.Columns("F").AutoFit
+        SeedSuitabilityCodes wsSetup
+        lastRow = wsSetup.Cells(wsSetup.Rows.Count, 6).End(xlUp).Row
+        For r = 2 To lastRow
+            v = Trim$(CStr(wsSetup.Cells(r, 6).Value))
+            If Len(v) > 0 Then bag(v) = True
+        Next r
     End If
 
     If bag.Count = 0 Then
@@ -915,12 +913,42 @@ Private Sub BuildSetupSheet(ByVal ws As Worksheet)
     ws.Cells(R_REV_FIRST + 6, 1).Value = "Description"
     ws.Cells(R_REV_FIRST + 2, 2).NumberFormat = "dd/mm/yyyy"
 
-    If Len(Trim$(CStr(ws.Range("F1").Value))) = 0 Then ws.Range("F1").Value = "Suitability Codes"
+    ws.Range("F1").Value = "Suitability Codes"
+    If SuitabilityCount(ws) = 0 Then SeedSuitabilityCodes ws
+
+    ' Sits under the buttons. The status bar is easy to miss otherwise.
+    ws.Range("H9").Value = "Progress is shown in the status bar, bottom-left of the Excel window."
+    ws.Range("H10").Value = "Every run writes a line per file to the Log sheet and finishes with a summary."
+    ws.Range("H9:H10").Font.Italic = True
+    ws.Range("H9:H10").Font.Color = RGB(100, 100, 100)
 
     ws.Range("A1,A3,A4,A6,F1").Font.Bold = True
     ws.Cells(R_REV_FIRST - 1, 1).Font.Bold = True
     ws.Columns("A").AutoFit
     If ws.Columns("B").ColumnWidth < 30 Then ws.Columns("B").ColumnWidth = 30
+End Sub
+
+
+Private Function SuitabilityCount(ByVal wsSetup As Worksheet) As Long
+    Dim lastRow As Long, r As Long
+    lastRow = wsSetup.Cells(wsSetup.Rows.Count, 6).End(xlUp).Row
+    For r = 2 To lastRow
+        If Len(Trim$(CStr(wsSetup.Cells(r, 6).Value))) > 0 Then _
+            SuitabilityCount = SuitabilityCount + 1
+    Next r
+End Function
+
+
+Private Sub SeedSuitabilityCodes(ByVal wsSetup As Worksheet)
+    Dim codes As Variant
+    Dim i As Long
+
+    codes = DefaultSuitabilityCodes()
+    wsSetup.Range("F2:F200").ClearContents
+    For i = LBound(codes) To UBound(codes)
+        wsSetup.Cells(2 + i - LBound(codes), 6).Value = codes(i)
+    Next i
+    wsSetup.Columns("F").AutoFit
 End Sub
 
 
@@ -963,6 +991,8 @@ Private Sub FormatList(ByVal ws As Worksheet, ByVal lastRow As Long)
 
     ws.Columns(9).NumberFormat = "dd/mm/yyyy"
     ws.Columns(C_NEW_FIRST + 2).NumberFormat = "dd/mm/yyyy"
+    ' Clearing the rows resets these to General every refresh, so set it here.
+    ws.Columns(C_STAMP).NumberFormat = "dd/mm/yyyy hh:mm"
 
     ws.Range(ws.Cells(1, 1), ws.Cells(1, C_CHECKS)).EntireColumn.AutoFit
     If ws.Columns(C_CHECKS).ColumnWidth > 60 Then ws.Columns(C_CHECKS).ColumnWidth = 60

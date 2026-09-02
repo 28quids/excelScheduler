@@ -23,6 +23,33 @@ Private Const META_LAST_ROW As Long = 14
 Public Const REV_PREFIXES As String = "P,C,AF"
 
 
+' The suitability codes seeded onto the Setup sheet and pushed into every
+' schedule's Metadata sheet. ISO 19650 CDE status codes.
+'
+' Format is "<code> - <description>". The title block splits on the " - ",
+' so no description may contain one.
+'
+' S5 is deliberately absent: the standard leaves it to project guidance, so a
+' shared dropdown cannot say anything useful about it. Historic revision rows
+' that already say "S5 - ..." keep their text, as they should - the revision
+' table is a record of what was issued, not something to rewrite. Add a row to
+' column F of the Setup sheet if this project needs S5 back.
+Public Function DefaultSuitabilityCodes() As Variant
+    DefaultSuitabilityCodes = Array( _
+        "S0 - Work in Progress", _
+        "S1 - Suitable for Coordination", _
+        "S2 - Suitable for Information", _
+        "S3 - Suitable for Review and Comment", _
+        "S4 - Suitable for Stage Approval", _
+        "S6 - Suitable for PIM Authorisation", _
+        "S7 - Suitable for AIM Authorisation", _
+        "A1 - Authorised and Accepted", _
+        "A2 - Authorised and Accepted", _
+        "B1 - Published with Comments", _
+        "B2 - Published with Comments")
+End Function
+
+
 ' Repairs / sets up one open schedule workbook. Returns a log string
 ' (empty means "nothing worth reporting"). Never saves - the caller decides.
 Public Function RepairWorkbook(ByVal wbTgt As Workbook, _
@@ -664,32 +691,6 @@ Public Function ReadMeta(ByVal wb As Workbook, ByVal header As String) As Varian
 
     ReadMeta = CellValue(lbl.Offset(0, 1))
 End Function
-
-
-' Distinct Status values already present in a schedule's revision table.
-Public Sub CollectStatuses(ByVal wb As Workbook, ByVal bag As Object)
-    Dim wsRev As Worksheet
-    Dim lo As ListObject
-    Dim col As ListColumn
-    Dim cell As Range
-    Dim v As String
-
-    Set wsRev = GetSheet(wb, SH_REV)
-    If wsRev Is Nothing Then Exit Sub
-
-    On Error Resume Next
-    Set lo = wsRev.ListObjects("RevisionTable")
-    If lo Is Nothing Then Exit Sub
-    Set col = lo.ListColumns("Status")
-    On Error GoTo 0
-    If col Is Nothing Then Exit Sub
-    If col.DataBodyRange Is Nothing Then Exit Sub
-
-    For Each cell In col.DataBodyRange.Cells
-        v = Trim$(CStr(cell.Value))
-        If Len(v) > 0 Then bag(v) = True
-    Next cell
-End Sub
 
 
 ' Appends one row to a schedule's revision table.
