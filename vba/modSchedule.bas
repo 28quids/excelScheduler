@@ -820,7 +820,7 @@ End Sub
 Public Function CaptureHF(ByVal ws As Worksheet) As HFSet
     Dim h As HFSet
 
-    On Error GoTo Done
+    On Error GoTo Finish
     With ws.PageSetup
         h.LeftHeader = .LeftHeader
         h.CenterHeader = .CenterHeader
@@ -851,12 +851,12 @@ Public Function CaptureHF(ByVal ws As Worksheet) As HFSet
             h.EvenRightFooter = .EvenPage.RightFooter.Text
         End If
         Err.Clear
-        On Error GoTo Done
+        On Error GoTo Finish
     End With
 
     h.Valid = True
 
-Done:
+Finish:
     CaptureHF = h
 End Function
 
@@ -869,7 +869,7 @@ End Function
 Public Function ApplyHF(ByVal ws As Worksheet, ByRef h As HFSet) As String
     If Not h.Valid Then Exit Function
 
-    On Error GoTo Failed
+    On Error GoTo HFError
     Application.PrintCommunication = False
 
     With ws.PageSetup
@@ -903,13 +903,13 @@ Public Function ApplyHF(ByVal ws As Worksheet, ByRef h As HFSet) As String
             .EvenPage.RightFooter.Text = h.EvenRightFooter
         End If
         Err.Clear
-        On Error GoTo Failed
+        On Error GoTo HFError
     End With
 
     Application.PrintCommunication = True
     Exit Function
 
-Failed:
+HFError:
     Application.PrintCommunication = True
     ApplyHF = "'" & ws.Name & "' failed: " & Err.Description & ". "
 End Function
@@ -1029,25 +1029,25 @@ Private Function CopyOnePicture(ByVal wsSrc As Worksheet, ByVal wsTgt As Workshe
     Dim pSrc As Graphic, pTgt As Graphic
     Dim srcFile As String, tgtFile As String
 
-    On Error GoTo Done
+    On Error GoTo Finish
     Set pSrc = PicSlot(wsSrc, slot)
     Set pTgt = PicSlot(wsTgt, slot)
-    If pSrc Is Nothing Or pTgt Is Nothing Then GoTo Done
+    If pSrc Is Nothing Or pTgt Is Nothing Then GoTo Finish
 
     On Error Resume Next
     srcFile = pSrc.fileName
     tgtFile = pTgt.fileName
     Err.Clear
-    On Error GoTo Done
+    On Error GoTo Finish
 
-    If Len(srcFile) = 0 Then GoTo Done
+    If Len(srcFile) = 0 Then GoTo Finish
 
     If Len(tgtFile) = 0 Then
         ' No image in the target. Only re-insertable if the original still exists.
         If Not FileExists(srcFile) Then
             CopyOnePicture = "'" & wsTgt.Name & "' has no header/footer image and the " & _
                              "source image file is not on this PC - add it by hand. "
-            GoTo Done
+            GoTo Finish
         End If
         pTgt.fileName = srcFile
     End If
@@ -1056,7 +1056,7 @@ Private Function CopyOnePicture(ByVal wsSrc As Worksheet, ByVal wsTgt As Workshe
     pTgt.Height = pSrc.Height
     pTgt.Width = pSrc.Width
 
-Done:
+Finish:
     Err.Clear
 End Function
 

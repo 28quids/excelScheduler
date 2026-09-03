@@ -756,7 +756,7 @@ End Sub
 Private Function SnapshotList(ByVal wsList As Worksheet) As Object
     Dim d As Object
     Dim lastRow As Long, r As Long, c As Long
-    Dim row() As Variant
+    Dim vals() As Variant
     Dim f As String
 
     Set d = CreateObject("Scripting.Dictionary")
@@ -768,11 +768,11 @@ Private Function SnapshotList(ByVal wsList As Worksheet) As Object
     For r = 2 To lastRow
         f = LCase$(AsText(wsList.Cells(r, C_FILE).Value))
         If Len(f) > 0 Then
-            ReDim row(1 To C_FILECHK)
+            ReDim vals(1 To C_FILECHK)
             For c = 1 To C_FILECHK
-                row(c) = wsList.Cells(r, c).Value
+                vals(c) = wsList.Cells(r, c).Value
             Next c
-            d(f) = row
+            d(f) = vals
         End If
     Next r
 End Function
@@ -781,30 +781,30 @@ End Function
 ' A cached row is reusable only when the file has not been touched since.
 Private Function CanReuse(ByVal keep As Object, ByVal fileName As String, _
                           ByVal stamp As Double) As Boolean
-    Dim row As Variant
+    Dim vals As Variant
     Dim old As Double
 
     If stamp = 0 Then Exit Function
     If Not keep.Exists(LCase$(fileName)) Then Exit Function
 
-    row = keep(LCase$(fileName))
-    If Len(AsText(row(C_DATA_1))) = 0 And Len(AsText(row(C_CHECKS))) = 0 Then Exit Function
+    vals = keep(LCase$(fileName))
+    If Len(AsText(vals(C_DATA_1))) = 0 And Len(AsText(vals(C_CHECKS))) = 0 Then Exit Function
 
     On Error Resume Next
-    old = CDbl(row(C_STAMP))
+    old = CDbl(vals(C_STAMP))
     On Error GoTo 0
 
     CanReuse = (old <> 0) And (Abs(old - stamp) < 0.000001)
 End Function
 
 
-Private Sub RestoreRow(ByVal wsList As Worksheet, ByVal r As Long, ByVal row As Variant)
+Private Sub RestoreRow(ByVal wsList As Worksheet, ByVal r As Long, ByVal vals As Variant)
     Dim c As Long
     For c = C_FILE To C_CHECKS
-        wsList.Cells(r, c).Value = row(c)
+        wsList.Cells(r, c).Value = vals(c)
     Next c
-    wsList.Cells(r, C_STAMP).Value = row(C_STAMP)
-    wsList.Cells(r, C_FILECHK).Value = row(C_FILECHK)
+    wsList.Cells(r, C_STAMP).Value = vals(C_STAMP)
+    wsList.Cells(r, C_FILECHK).Value = vals(C_FILECHK)
 End Sub
 
 
@@ -814,16 +814,16 @@ Private Sub RestoreTypedEntries(ByVal wsList As Worksheet, ByVal keep As Object,
                                 ByVal lastRow As Long)
     Dim r As Long, c As Long
     Dim f As String
-    Dim row As Variant
+    Dim vals As Variant
 
     For r = 2 To lastRow
         f = LCase$(AsText(wsList.Cells(r, C_FILE).Value))
         If keep.Exists(f) Then
-            row = keep(f)
+            vals = keep(f)
             If Len(AsText(wsList.Cells(r, C_PICK).Value)) = 0 Then _
-                wsList.Cells(r, C_PICK).Value = row(C_PICK)
+                wsList.Cells(r, C_PICK).Value = vals(C_PICK)
             For c = C_NEW_FIRST To C_NEW_FIRST + REV_FIELDS - 1
-                If Len(AsText(wsList.Cells(r, c).Value)) = 0 Then wsList.Cells(r, c).Value = row(c)
+                If Len(AsText(wsList.Cells(r, c).Value)) = 0 Then wsList.Cells(r, c).Value = vals(c)
             Next c
         End If
     Next r
@@ -1093,15 +1093,22 @@ End Function
 
 
 Private Sub BuildSetupSheet(ByVal ws As Worksheet)
-    ' Start from a clean slate so re-running does not stack formatting up.
+    ' Start from a clean slate. Formats AND text, because the row a label sits
+    ' on can move between versions and a leftover line is worse than no line.
+    ' Column B is left alone - that is the user's data. So is column F, the
+    ' suitability codes, and every other sheet in the workbook.
     ws.Range("A1:F40").ClearFormats
-    ws.Range("H1:H22").ClearFormats
+    ws.Range("A5:A40").ClearContents
+    ws.Range("C1:C40").ClearContents
+    ws.Range("H1:H26").ClearFormats
+    ws.Range("H1:H26").ClearContents
     ws.Range("A1:A" & R_REV_FIRST + 6).Font.Color = CLR_LABEL
 
-    ' Thin spacer rows, so each block reads as a block instead of a gap.
-    ws.Rows(2).RowHeight = 6
-    ws.Rows(5).RowHeight = 6
-    ws.Rows(14).RowHeight = 6
+    ' Row heights back to standard. An earlier version shrank rows 2 and 5 as
+    ' spacers, which squashed the suitability codes sharing those rows in F.
+    ws.Rows(2).RowHeight = ws.StandardHeight
+    ws.Rows(5).RowHeight = ws.StandardHeight
+    ws.Rows(14).RowHeight = ws.StandardHeight
 
     ' --- Project -----------------------------------------------------------
     ' Rows 1, 3 and 4 are fixed. Schedules set up before now link to $B$1,
@@ -1132,9 +1139,18 @@ Private Sub BuildSetupSheet(ByVal ws As Worksheet)
     ReadOnlyCell ws.Cells(R_OPT_SETUP, 2)
     ReadOnlyCell ws.Cells(R_OPT_LIST, 2)
 
-    If Len(Trim$(CStr(ws.Cells(R_OPT_BACKUP, 2).Value))) = 0 Then ws.Cells(R_OPT_BACKUP, 2).Value = "Yes"
-    If Len(Trim$(CStr(ws.Cells(R_OPT_AUTO, 2).Value))) = 0 Then ws.Cells(R_OPT_AUTO, 2).Value = "No"
-    If Len(Trim$(CStr(ws.Cells(R_OPT_FULL, 2).Value))) = 0 Then ws.Cells(R_OPT_FULL, 2).Value = "No"
+    ' Option rows have moved between versions, so a cell can be holding the
+    ' value of whatever used to live on that row. Anything that is not a valid
+    ' answer goes back to the default rather than being left to be read wrong.
+    NormaliseYesNo ws.Cells(R_OPT_BACKUP, 2), "Yes"
+    NormaliseYesNo ws.Cells(R_OPT_AUTO, 2), "No"
+    NormaliseYesNo ws.Cells(R_OPT_FULL, 2), "No"
+
+    If IsNumeric(ws.Cells(R_OPT_HFSRC, 2).Value) Then ws.Cells(R_OPT_HFSRC, 2).ClearContents
+
+    ' Written by the tool on its next run; whatever is there now is stale.
+    ws.Cells(R_OPT_SETUP, 2).ClearContents
+    ws.Cells(R_OPT_LIST, 2).ClearContents
 
     YesNoList ws.Cells(R_OPT_BACKUP, 2)
     YesNoList ws.Cells(R_OPT_AUTO, 2)
@@ -1167,14 +1183,15 @@ Private Sub BuildSetupSheet(ByVal ws As Worksheet)
     SuitabilityList ws, ws.Cells(R_REV_FIRST + 1, 2)
 
     ' --- Notes beside the buttons -----------------------------------------
-    Note ws.Range("H11"), "Cells shaded yellow are the ones you fill in."
-    Note ws.Range("H12"), "Progress is shown in the status bar, bottom-left of the Excel window."
-    Note ws.Range("H13"), "Every run writes a line per file to the Log sheet, then a summary."
-    Note ws.Range("H15"), "Added a schedule? Press 'Set up / repair schedules' again - it is safe to re-run."
-    Note ws.Range("H16"), "To reissue: on ScheduleList put an x in 'Add?', fill the blue 'New ...' columns,"
-    Note ws.Range("H17"), "then press 'Add revision to ticked'. Blanks fall back to the block above."
-    Note ws.Range("H19"), "Security classification: set the header/footer on one workbook by hand under"
-    Note ws.Range("H20"), "Page Layout, then press 'Copy headers && footers' to push it to the rest."
+    ' Row 13 down, so the four buttons above never sit on top of them.
+    Note ws.Range("H13"), "Cells shaded yellow are the ones you fill in."
+    Note ws.Range("H14"), "Progress is shown in the status bar, bottom-left of the Excel window."
+    Note ws.Range("H15"), "Every run writes a line per file to the Log sheet, then a summary."
+    Note ws.Range("H17"), "Added a schedule? Press 'Set up / repair schedules' again - it is safe to re-run."
+    Note ws.Range("H18"), "To reissue: on ScheduleList put an x in 'Add?', fill the blue 'New ...' columns,"
+    Note ws.Range("H19"), "then press 'Add revision to ticked'. Blanks fall back to the block above."
+    Note ws.Range("H21"), "Security classification: set the header/footer on one workbook by hand under"
+    Note ws.Range("H22"), "Page Layout, then press 'Copy headers && footers' to push it to the rest."
 
     ' --- Layout ------------------------------------------------------------
     ws.Columns("A").ColumnWidth = 24
@@ -1236,6 +1253,16 @@ Private Sub Note(ByVal rng As Range, ByVal txt As String)
 End Sub
 
 
+Private Sub NormaliseYesNo(ByVal rng As Range, ByVal defaultValue As String)
+    Select Case UCase$(Trim$(CStr(rng.Value)))
+        Case "YES", "NO"
+            ' fine as it is
+        Case Else
+            rng.Value = defaultValue
+    End Select
+End Sub
+
+
 Private Sub YesNoList(ByVal rng As Range)
     On Error Resume Next
     rng.Validation.Delete
@@ -1257,6 +1284,16 @@ Private Sub SuitabilityList(ByVal wsSetup As Worksheet, ByVal rng As Range)
         Operator:=xlBetween, Formula1:="=$F$2:$F$" & (n + 1)
     rng.Validation.IgnoreBlank = True
     rng.Validation.InCellDropdown = True
+    On Error GoTo 0
+End Sub
+
+
+' A hover note on a header cell. Explains a column without spending a row.
+Private Sub HeaderNote(ByVal cell As Range, ByVal txt As String)
+    On Error Resume Next
+    cell.ClearComments
+    cell.AddComment txt
+    cell.Comment.Shape.TextFrame.AutoSize = True
     On Error GoTo 0
 End Sub
 

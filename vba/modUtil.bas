@@ -170,11 +170,11 @@ End Function
 ' visible, and it does not flicker the way a repainting sheet does.
 ' ---------------------------------------------------------------------------
 
-Public Sub ProgressStart(ByVal total As Long, ByVal caption As String)
+Public Sub ProgressStart(ByVal total As Long, ByVal jobName As String)
     mProgTotal = total
-    mProgCaption = caption
+    mProgCaption = jobName
     mProgStart = Timer
-    Application.StatusBar = caption & ": starting..."
+    Application.StatusBar = jobName & ": starting..."
     DoEvents
 End Sub
 

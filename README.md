@@ -103,6 +103,14 @@ the suitability codes in column F and the buttons to the right.
 **Anything shaded yellow is yours to fill in.** Grey italic cells are written
 by the tool. Everything else is a label or a note.
 
+`InstallTool` rebuilds this sheet each time it runs. It clears columns A, C and
+H and rewrites them, because option rows move between versions and a label left
+on an old row is worse than no label at all. It does **not** touch column B
+(your values), column F (the suitability codes), or any other sheet in the
+workbook, so a README sheet of your own is safe. Option cells holding a value
+from an older layout, such as a date serial sitting where a Yes/No now lives,
+are reset to the default rather than left to be read wrong.
+
 | Cell | Meaning |
 |---|---|
 | `B7` Schedules folder | blank = the folder this file is saved in. Filled in automatically if the tool has to ask |
