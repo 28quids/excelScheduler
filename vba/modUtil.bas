@@ -324,6 +324,33 @@ Public Function ResolveLocalFolder(ByVal p As String) As String
 End Function
 
 
+Public Function FileExists(ByVal fullPath As String) As Boolean
+    If Len(Trim$(fullPath)) = 0 Then Exit Function
+    If IsUrlPath(fullPath) Then Exit Function
+    On Error Resume Next
+    FileExists = Fso.FileExists(fullPath)
+    If Err.Number <> 0 Then
+        Err.Clear
+        FileExists = False
+    End If
+    On Error GoTo 0
+End Function
+
+
+Public Function PickWorkbook(ByVal promptText As String, ByVal startFolder As String) As String
+    Dim fd As FileDialog
+    Set fd = Application.FileDialog(msoFileDialogFilePicker)
+    With fd
+        .Title = promptText
+        .AllowMultiSelect = False
+        .Filters.Clear
+        .Filters.Add "Excel files", "*.xls;*.xlsx;*.xlsm;*.xlsb"
+        If Len(startFolder) > 0 Then .InitialFileName = EndSep(startFolder)
+        If .Show = -1 Then PickWorkbook = .SelectedItems(1)
+    End With
+End Function
+
+
 Public Function PickFolder(ByVal promptText As String) As String
     Dim fd As FileDialog
     Set fd = Application.FileDialog(msoFileDialogFolderPicker)

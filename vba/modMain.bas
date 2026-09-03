@@ -18,9 +18,10 @@ Private Const R_OPT_FOLDER  As Long = 7
 Private Const R_OPT_BACKUP  As Long = 8
 Private Const R_OPT_AUTO    As Long = 9
 Private Const R_OPT_FULL    As Long = 10
-Private Const R_OPT_SETUP   As Long = 11   ' read only
-Private Const R_OPT_LIST    As Long = 12   ' read only
-Private Const R_REV_FIRST   As Long = 15   ' Revision..Description = 15..21
+Private Const R_OPT_HFSRC   As Long = 11
+Private Const R_OPT_SETUP   As Long = 12   ' read only
+Private Const R_OPT_LIST    As Long = 13   ' read only
+Private Const R_REV_FIRST   As Long = 16   ' Revision..Description = 16..22
 
 ' Setup sheet palette. Yellow means "you fill this in".
 Private Const CLR_INPUT     As Long = 14810111   ' RGB(255, 251, 225)
@@ -382,6 +383,202 @@ Public Sub AddRevisionToTicked()
 Fail:
     Recover "Add revision", wbTgt
 End Sub
+
+
+' ===========================================================================
+' Button 4 - copy headers and footers out of one workbook
+'
+' This is how the security classification banner (OFFICIAL, OFFICIAL-SENSITIVE,
+' CONFIDENTIAL, or none) gets applied consistently: set one schedule up by hand
+' under Page Layout, then push it to the rest.
+' ===========================================================================
+Public Sub CopyHeadersFooters()
+    Dim wsSetup As Worksheet
+    Dim folderPath As String, srcPath As String, fileName As String
+    Dim wbSrc As Workbook, wbTgt As Workbook
+    Dim files As Collection, i As Long
+    Dim backupDir As String
+    Dim done As Long, skipped As Long, failed As Long
+    Dim started As Double
+    Dim oneLog As String, gWarn As String
+
+    Set wsSetup = GetSheet(ThisWorkbook, SH_SETUP)
+    If wsSetup Is Nothing Then
+        MsgBox "No Setup sheet. Run InstallTool first.", vbExclamation
+        Exit Sub
+    End If
+
+    folderPath = SchedulesFolder()
+    If Len(folderPath) = 0 Then Exit Sub
+
+    srcPath = HeaderSourcePath(wsSetup, folderPath)
+    If Len(srcPath) = 0 Then Exit Sub
+
+    Set files = ScheduleFiles(folderPath)
+    If files.Count = 0 Then
+        MsgBox "No other Excel files found in:" & vbCrLf & folderPath, vbInformation
+        Exit Sub
+    End If
+
+    If MsgBox("Copy the headers and footers from" & vbCrLf & vbCrLf & _
+              BaseName(srcPath) & vbCrLf & vbCrLf & _
+              "into the other workbooks in this folder?" & vbCrLf & vbCrLf & _
+              "Front Cover, Revision Page and the schedule sheets are matched up " & _
+              "separately. Whatever those sheets currently have is replaced.", _
+              vbQuestion + vbYesNo, "Copy headers & footers") = vbNo Then Exit Sub
+
+    If UCase$(Trim$(CStr(wsSetup.Cells(R_OPT_BACKUP, 2).Value))) <> "NO" Then
+        backupDir = EndSep(folderPath) & "_backup " & Format$(Now, "yyyy-mm-dd hh-nn")
+        On Error Resume Next
+        MkDir backupDir
+        On Error GoTo 0
+    End If
+
+    On Error GoTo Fail
+    LogStart "Copy headers & footers"
+    BeginQuiet xlCalculationManual
+    ProgressStart files.Count, "Copying headers and footers"
+    started = Timer
+
+    Set wbSrc = OpenQuiet(srcPath, True)
+    If wbSrc Is Nothing Then
+        EndQuiet
+        MsgBox "Could not open the source workbook:" & vbCrLf & srcPath, vbExclamation
+        Exit Sub
+    End If
+
+    LogLine BaseName(srcPath), "Source", SourceSummary(wbSrc)
+    gWarn = GraphicWarning(wbSrc)
+
+    For i = 1 To files.Count
+        fileName = files(i)
+        ProgressStep i - 1, fileName
+
+        If StrComp(EndSep(folderPath) & fileName, srcPath, vbTextCompare) = 0 Then
+            skipped = skipped + 1
+            LogLine fileName, "Skipped", "This is the source workbook."
+        Else
+            If Len(backupDir) > 0 Then
+                On Error Resume Next
+                FileCopy EndSep(folderPath) & fileName, EndSep(backupDir) & fileName
+                On Error GoTo 0
+            End If
+
+            Set wbTgt = OpenQuiet(EndSep(folderPath) & fileName, False)
+            If wbTgt Is Nothing Then
+                failed = failed + 1
+                LogLine fileName, "FAILED", "Could not open the file."
+            Else
+                oneLog = OldHeaderFooter(wbTgt) & " -> " & CopyHeadersFootersTo(wbSrc, wbTgt)
+                wbTgt.Close SaveChanges:=True
+                done = done + 1
+                LogLine fileName, "OK", oneLog
+            End If
+        End If
+    Next i
+
+    wbSrc.Close SaveChanges:=False
+    ProgressDone
+    EndQuiet
+
+    ShowSummary "Copy headers & footers", done, skipped, failed, Timer - started, _
+                gWarn & IIf(Len(backupDir) > 0, "Backup: " & backupDir, "")
+    Exit Sub
+
+Fail:
+    On Error Resume Next
+    If Not wbSrc Is Nothing Then wbSrc.Close SaveChanges:=False
+    On Error GoTo 0
+    Recover "Copy headers & footers", wbTgt
+End Sub
+
+
+' The workbook to copy from. Remembered on the Setup sheet, so re-running
+' after a tweak is one click.
+Private Function HeaderSourcePath(ByVal wsSetup As Worksheet, ByVal folderPath As String) As String
+    Dim v As String, candidate As String
+
+    v = Trim$(CStr(wsSetup.Cells(R_OPT_HFSRC, 2).Value))
+
+    If Len(v) > 0 Then
+        If FileExists(v) Then
+            HeaderSourcePath = v
+            Exit Function
+        End If
+        candidate = EndSep(folderPath) & v
+        If FileExists(candidate) Then
+            HeaderSourcePath = candidate
+            Exit Function
+        End If
+    End If
+
+    candidate = PickWorkbook("Pick the workbook whose headers and footers are correct", folderPath)
+    If Len(candidate) = 0 Then Exit Function
+
+    ' Store just the name when it lives in the schedules folder, so the setting
+    ' survives the folder moving between Filery and local.
+    If StrComp(EndSep(folderPath), EndSep(Left$(candidate, InStrRev(candidate, Application.PathSeparator))), vbTextCompare) = 0 Then
+        wsSetup.Cells(R_OPT_HFSRC, 2).Value = BaseName(candidate)
+    Else
+        wsSetup.Cells(R_OPT_HFSRC, 2).Value = candidate
+    End If
+
+    HeaderSourcePath = candidate
+End Function
+
+
+Private Function SourceSummary(ByVal wbSrc As Workbook) As String
+    Dim ws As Worksheet
+    Dim h As HFSet
+    Dim out As String
+
+    Set ws = GetSheet(wbSrc, SH_FRONT)
+    If Not ws Is Nothing Then
+        h = CaptureHF(ws)
+        out = "Front Cover: " & DescribeHF(h) & ". "
+    End If
+
+    Set ws = GetSheet(wbSrc, "Schedule")
+    If ws Is Nothing Then Set ws = FirstScheduleSheet(wbSrc)
+    If Not ws Is Nothing Then
+        h = CaptureHF(ws)
+        out = out & ws.Name & ": " & DescribeHF(h) & "."
+    End If
+
+    SourceSummary = out
+End Function
+
+
+' What the target had before, so the log is a record you can undo from.
+Private Function OldHeaderFooter(ByVal wb As Workbook) As String
+    Dim ws As Worksheet
+    Dim h As HFSet
+
+    Set ws = GetSheet(wb, SH_FRONT)
+    If ws Is Nothing Then Set ws = FirstScheduleSheet(wb)
+    If ws Is Nothing Then Exit Function
+
+    h = CaptureHF(ws)
+    OldHeaderFooter = "was " & DescribeHF(h)
+End Function
+
+
+' &G is a picture placeholder. The image lives inside each file and cannot be
+' carried across, so say so rather than let someone find out at print time.
+Private Function GraphicWarning(ByVal wbSrc As Workbook) As String
+    Dim ws As Worksheet
+    Dim h As HFSet
+
+    For Each ws In wbSrc.Worksheets
+        h = CaptureHF(ws)
+        If UsesGraphic(h) Then
+            GraphicWarning = "The source uses a header/footer image (&G). The placeholder " & _
+                             "was copied, but each file keeps its own image - check one " & _
+                             "print preview." & vbCrLf & vbCrLf
+            Exit Function
+        End If
+    Next ws
+End Function
 
 
 Public Sub Auto_Open()
@@ -898,13 +1095,13 @@ End Function
 Private Sub BuildSetupSheet(ByVal ws As Worksheet)
     ' Start from a clean slate so re-running does not stack formatting up.
     ws.Range("A1:F40").ClearFormats
-    ws.Range("H1:H20").ClearFormats
+    ws.Range("H1:H22").ClearFormats
     ws.Range("A1:A" & R_REV_FIRST + 6).Font.Color = CLR_LABEL
 
     ' Thin spacer rows, so each block reads as a block instead of a gap.
     ws.Rows(2).RowHeight = 6
     ws.Rows(5).RowHeight = 6
-    ws.Rows(13).RowHeight = 6
+    ws.Rows(14).RowHeight = 6
 
     ' --- Project -----------------------------------------------------------
     ' Rows 1, 3 and 4 are fixed. Schedules set up before now link to $B$1,
@@ -923,6 +1120,7 @@ Private Sub BuildSetupSheet(ByVal ws As Worksheet)
     ws.Cells(R_OPT_BACKUP, 1).Value = "Backup before changes"
     ws.Cells(R_OPT_AUTO, 1).Value = "Refresh list on open"
     ws.Cells(R_OPT_FULL, 1).Value = "Full refresh every time"
+    ws.Cells(R_OPT_HFSRC, 1).Value = "Header/footer source"
     ws.Cells(R_OPT_SETUP, 1).Value = "Last setup run"
     ws.Cells(R_OPT_LIST, 1).Value = "Last list refresh"
 
@@ -930,6 +1128,7 @@ Private Sub BuildSetupSheet(ByVal ws As Worksheet)
     InputCell ws.Cells(R_OPT_BACKUP, 2)
     InputCell ws.Cells(R_OPT_AUTO, 2)
     InputCell ws.Cells(R_OPT_FULL, 2)
+    InputCell ws.Cells(R_OPT_HFSRC, 2)
     ReadOnlyCell ws.Cells(R_OPT_SETUP, 2)
     ReadOnlyCell ws.Cells(R_OPT_LIST, 2)
 
@@ -945,6 +1144,7 @@ Private Sub BuildSetupSheet(ByVal ws As Worksheet)
     Note ws.Cells(R_OPT_BACKUP, 3), "copies every file into a timestamped folder first"
     Note ws.Cells(R_OPT_AUTO, 3), "reads every schedule when this file is opened"
     Note ws.Cells(R_OPT_FULL, 3), "No = only reopen files that changed since last time"
+    Note ws.Cells(R_OPT_HFSRC, 3), "the workbook to copy headers/footers from; blank = ask"
 
     ' --- New revision ------------------------------------------------------
     SectionHeader ws, R_REV_FIRST - 1, "NEW REVISION"
@@ -967,12 +1167,14 @@ Private Sub BuildSetupSheet(ByVal ws As Worksheet)
     SuitabilityList ws, ws.Cells(R_REV_FIRST + 1, 2)
 
     ' --- Notes beside the buttons -----------------------------------------
-    Note ws.Range("H9"), "Cells shaded yellow are the ones you fill in."
-    Note ws.Range("H10"), "Progress is shown in the status bar, bottom-left of the Excel window."
-    Note ws.Range("H11"), "Every run writes a line per file to the Log sheet, then a summary."
-    Note ws.Range("H13"), "Added a schedule? Press 'Set up / repair schedules' again - it is safe to re-run."
-    Note ws.Range("H14"), "To reissue: on ScheduleList put an x in 'Add?', fill the blue 'New ...' columns,"
-    Note ws.Range("H15"), "then press 'Add revision to ticked'. Blanks fall back to the block above."
+    Note ws.Range("H11"), "Cells shaded yellow are the ones you fill in."
+    Note ws.Range("H12"), "Progress is shown in the status bar, bottom-left of the Excel window."
+    Note ws.Range("H13"), "Every run writes a line per file to the Log sheet, then a summary."
+    Note ws.Range("H15"), "Added a schedule? Press 'Set up / repair schedules' again - it is safe to re-run."
+    Note ws.Range("H16"), "To reissue: on ScheduleList put an x in 'Add?', fill the blue 'New ...' columns,"
+    Note ws.Range("H17"), "then press 'Add revision to ticked'. Blanks fall back to the block above."
+    Note ws.Range("H19"), "Security classification: set the header/footer on one workbook by hand under"
+    Note ws.Range("H20"), "Page Layout, then press 'Copy headers && footers' to push it to the rest."
 
     ' --- Layout ------------------------------------------------------------
     ws.Columns("A").ColumnWidth = 24
@@ -1180,6 +1382,10 @@ Private Sub BuildButtons(ByVal ws As Worksheet)
     Set b = ws.Buttons.Add(ws.Range("H2").Left, ws.Range("H2").Top + 72, 200, 30)
     b.OnAction = "AddRevisionToTicked"
     b.Caption = "Add revision to ticked"
+
+    Set b = ws.Buttons.Add(ws.Range("H2").Left, ws.Range("H2").Top + 108, 200, 30)
+    b.OnAction = "CopyHeadersFooters"
+    b.Caption = "Copy headers && footers"
 End Sub
 
 

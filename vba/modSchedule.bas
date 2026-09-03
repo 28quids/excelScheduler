@@ -17,6 +17,33 @@ Option Explicit
 ' the ScheduleList reads back, so do not rename them casually.
 Private Const META_LAST_ROW As Long = 14
 
+' One sheet's header and footer, captured from the source workbook.
+Public Type HFSet
+    Valid As Boolean
+    LeftHeader As String
+    CenterHeader As String
+    RightHeader As String
+    LeftFooter As String
+    CenterFooter As String
+    RightFooter As String
+    DiffFirstPage As Boolean
+    OddAndEven As Boolean
+    AlignMargins As Boolean
+    ScaleWithDoc As Boolean
+    FirstLeftHeader As String
+    FirstCenterHeader As String
+    FirstRightHeader As String
+    FirstLeftFooter As String
+    FirstCenterFooter As String
+    FirstRightFooter As String
+    EvenLeftHeader As String
+    EvenCenterHeader As String
+    EvenRightHeader As String
+    EvenLeftFooter As String
+    EvenCenterFooter As String
+    EvenRightFooter As String
+End Type
+
 ' Revision families in priority order, lowest first. "P" preliminary,
 ' "C" construction, "AF" as fitted, so AF01 beats C09 beats P12.
 ' Add a family here and re-run setup to push it into every schedule.
@@ -780,3 +807,281 @@ Private Sub SetCol(ByVal lo As ListObject, ByVal rowRange As Range, _
     On Error GoTo 0
     If idx > 0 Then rowRange.Cells(1, idx).Value = v
 End Sub
+
+
+' ===========================================================================
+' Headers and footers
+'
+' Used for the security classification banner (OFFICIAL, OFFICIAL-SENSITIVE,
+' CONFIDENTIAL, or nothing). Set one workbook up by hand, then copy it out.
+' ===========================================================================
+
+' Reads one sheet's header and footer.
+Public Function CaptureHF(ByVal ws As Worksheet) As HFSet
+    Dim h As HFSet
+
+    On Error GoTo Done
+    With ws.PageSetup
+        h.LeftHeader = .LeftHeader
+        h.CenterHeader = .CenterHeader
+        h.RightHeader = .RightHeader
+        h.LeftFooter = .LeftFooter
+        h.CenterFooter = .CenterFooter
+        h.RightFooter = .RightFooter
+        h.DiffFirstPage = .DifferentFirstPageHeaderFooter
+        h.OddAndEven = .OddAndEvenPagesHeaderFooter
+        h.AlignMargins = .AlignMarginsHeaderFooter
+        h.ScaleWithDoc = .ScaleWithDocHeaderFooter
+
+        On Error Resume Next
+        If h.DiffFirstPage Then
+            h.FirstLeftHeader = .FirstPage.LeftHeader.Text
+            h.FirstCenterHeader = .FirstPage.CenterHeader.Text
+            h.FirstRightHeader = .FirstPage.RightHeader.Text
+            h.FirstLeftFooter = .FirstPage.LeftFooter.Text
+            h.FirstCenterFooter = .FirstPage.CenterFooter.Text
+            h.FirstRightFooter = .FirstPage.RightFooter.Text
+        End If
+        If h.OddAndEven Then
+            h.EvenLeftHeader = .EvenPage.LeftHeader.Text
+            h.EvenCenterHeader = .EvenPage.CenterHeader.Text
+            h.EvenRightHeader = .EvenPage.RightHeader.Text
+            h.EvenLeftFooter = .EvenPage.LeftFooter.Text
+            h.EvenCenterFooter = .EvenPage.CenterFooter.Text
+            h.EvenRightFooter = .EvenPage.RightFooter.Text
+        End If
+        Err.Clear
+        On Error GoTo Done
+    End With
+
+    h.Valid = True
+
+Done:
+    CaptureHF = h
+End Function
+
+
+' Writes one sheet's header and footer.
+'
+' PageSetup talks to the printer driver on every single property, which is
+' what makes it crawl. PrintCommunication off turns the whole block into one
+' round trip.
+Public Function ApplyHF(ByVal ws As Worksheet, ByRef h As HFSet) As String
+    If Not h.Valid Then Exit Function
+
+    On Error GoTo Failed
+    Application.PrintCommunication = False
+
+    With ws.PageSetup
+        .DifferentFirstPageHeaderFooter = h.DiffFirstPage
+        .OddAndEvenPagesHeaderFooter = h.OddAndEven
+        .AlignMarginsHeaderFooter = h.AlignMargins
+        .ScaleWithDocHeaderFooter = h.ScaleWithDoc
+
+        .LeftHeader = h.LeftHeader
+        .CenterHeader = h.CenterHeader
+        .RightHeader = h.RightHeader
+        .LeftFooter = h.LeftFooter
+        .CenterFooter = h.CenterFooter
+        .RightFooter = h.RightFooter
+
+        On Error Resume Next
+        If h.DiffFirstPage Then
+            .FirstPage.LeftHeader.Text = h.FirstLeftHeader
+            .FirstPage.CenterHeader.Text = h.FirstCenterHeader
+            .FirstPage.RightHeader.Text = h.FirstRightHeader
+            .FirstPage.LeftFooter.Text = h.FirstLeftFooter
+            .FirstPage.CenterFooter.Text = h.FirstCenterFooter
+            .FirstPage.RightFooter.Text = h.FirstRightFooter
+        End If
+        If h.OddAndEven Then
+            .EvenPage.LeftHeader.Text = h.EvenLeftHeader
+            .EvenPage.CenterHeader.Text = h.EvenCenterHeader
+            .EvenPage.RightHeader.Text = h.EvenRightHeader
+            .EvenPage.LeftFooter.Text = h.EvenLeftFooter
+            .EvenPage.CenterFooter.Text = h.EvenCenterFooter
+            .EvenPage.RightFooter.Text = h.EvenRightFooter
+        End If
+        Err.Clear
+        On Error GoTo Failed
+    End With
+
+    Application.PrintCommunication = True
+    Exit Function
+
+Failed:
+    Application.PrintCommunication = True
+    ApplyHF = "'" & ws.Name & "' failed: " & Err.Description & ". "
+End Function
+
+
+' True if a header or footer uses &G, the picture placeholder. The picture
+' itself lives in the file and cannot be copied between workbooks, so the
+' target keeps whichever image it already has.
+Public Function UsesGraphic(ByRef h As HFSet) As Boolean
+    Dim all As String
+    all = h.LeftHeader & h.CenterHeader & h.RightHeader & _
+          h.LeftFooter & h.CenterFooter & h.RightFooter
+    UsesGraphic = (InStr(1, all, "&G", vbTextCompare) > 0)
+End Function
+
+
+' A one-line summary of a header/footer, for the log.
+Public Function DescribeHF(ByRef h As HFSet) As String
+    Dim hdr As String, ftr As String
+    hdr = Trim$(h.LeftHeader & " " & h.CenterHeader & " " & h.RightHeader)
+    ftr = Trim$(h.LeftFooter & " " & h.CenterFooter & " " & h.RightFooter)
+    If Len(hdr) = 0 Then hdr = "(none)"
+    If Len(ftr) = 0 Then ftr = "(none)"
+    DescribeHF = "header " & hdr & " / footer " & ftr
+End Function
+
+
+' Copies headers and footers from one open workbook into another.
+'
+' Sheet matching, in order:
+'   1. a source sheet with the same name
+'   2. Front Cover and Revision Page to their namesakes
+'   3. anything else to the source's schedule sheet
+'
+' Schedule tabs are not always called "Schedule", which is why the name match
+' comes first and the role fallback second.
+'
+' Only header and footer properties are written. Orientation, paper size and
+' margins are left alone, so a landscape schedule stays landscape. Header and
+' footer text is positioned relative to whatever page the sheet is set to, so
+' the same banner is correct on both.
+Public Function CopyHeadersFootersTo(ByVal wbSrc As Workbook, ByVal wbTgt As Workbook) As String
+    Dim wsTgt As Worksheet, wsSrc As Worksheet
+    Dim h As HFSet
+    Dim log As String
+    Dim n As Long
+
+    For Each wsTgt In wbTgt.Worksheets
+        If LCase$(Trim$(wsTgt.Name)) <> LCase$(SH_META) Then
+            Set wsSrc = MatchSourceSheet(wbSrc, wsTgt)
+            If wsSrc Is Nothing Then
+                log = log & "No source sheet for '" & wsTgt.Name & "'. "
+            Else
+                h = CaptureHF(wsSrc)
+                If h.Valid Then
+                    log = log & ApplyHF(wsTgt, h)
+                    log = log & CopyHFPictures(wsSrc, wsTgt)
+                    n = n + 1
+                End If
+            End If
+        End If
+    Next wsTgt
+
+    CopyHeadersFootersTo = "Set " & n & " sheet(s). " & log
+End Function
+
+
+Private Function MatchSourceSheet(ByVal wbSrc As Workbook, ByVal wsTgt As Worksheet) As Worksheet
+    Dim ws As Worksheet
+
+    ' 1. same name
+    Set ws = GetSheet(wbSrc, wsTgt.Name)
+    If Not ws Is Nothing Then
+        Set MatchSourceSheet = ws
+        Exit Function
+    End If
+
+    ' 2. the two named sheets
+    Select Case LCase$(Trim$(wsTgt.Name))
+        Case LCase$(SH_FRONT)
+            Set MatchSourceSheet = GetSheet(wbSrc, SH_FRONT)
+            Exit Function
+        Case LCase$(SH_REV)
+            Set MatchSourceSheet = GetSheet(wbSrc, SH_REV)
+            Exit Function
+    End Select
+
+    ' 3. whatever the source uses for its schedule
+    Set MatchSourceSheet = GetSheet(wbSrc, "Schedule")
+    If MatchSourceSheet Is Nothing Then Set MatchSourceSheet = FirstScheduleSheet(wbSrc)
+End Function
+
+
+' Matches the size of the header/footer images, so a logo scaled to 20% in the
+' source is 20% everywhere.
+'
+' The image data itself lives inside each file and cannot be moved between
+' workbooks from VBA. Where the target already has an image, only its size is
+' matched. Where it has none, the source's original file path is tried, which
+' works only if that file is still on this PC.
+'
+' Runs with printer communication back on: picture properties need it.
+Private Function CopyHFPictures(ByVal wsSrc As Worksheet, ByVal wsTgt As Worksheet) As String
+    Dim i As Long
+    Dim log As String
+
+    For i = 1 To 6
+        log = log & CopyOnePicture(wsSrc, wsTgt, i)
+    Next i
+
+    CopyHFPictures = log
+End Function
+
+
+Private Function CopyOnePicture(ByVal wsSrc As Worksheet, ByVal wsTgt As Worksheet, _
+                                ByVal slot As Long) As String
+    Dim pSrc As Graphic, pTgt As Graphic
+    Dim srcFile As String, tgtFile As String
+
+    On Error GoTo Done
+    Set pSrc = PicSlot(wsSrc, slot)
+    Set pTgt = PicSlot(wsTgt, slot)
+    If pSrc Is Nothing Or pTgt Is Nothing Then GoTo Done
+
+    On Error Resume Next
+    srcFile = pSrc.fileName
+    tgtFile = pTgt.fileName
+    Err.Clear
+    On Error GoTo Done
+
+    If Len(srcFile) = 0 Then GoTo Done
+
+    If Len(tgtFile) = 0 Then
+        ' No image in the target. Only re-insertable if the original still exists.
+        If Not FileExists(srcFile) Then
+            CopyOnePicture = "'" & wsTgt.Name & "' has no header/footer image and the " & _
+                             "source image file is not on this PC - add it by hand. "
+            GoTo Done
+        End If
+        pTgt.fileName = srcFile
+    End If
+
+    pTgt.LockAspectRatio = pSrc.LockAspectRatio
+    pTgt.Height = pSrc.Height
+    pTgt.Width = pSrc.Width
+
+Done:
+    Err.Clear
+End Function
+
+
+Private Function PicSlot(ByVal ws As Worksheet, ByVal slot As Long) As Graphic
+    On Error Resume Next
+    Select Case slot
+        Case 1: Set PicSlot = ws.PageSetup.LeftHeaderPicture
+        Case 2: Set PicSlot = ws.PageSetup.CenterHeaderPicture
+        Case 3: Set PicSlot = ws.PageSetup.RightHeaderPicture
+        Case 4: Set PicSlot = ws.PageSetup.LeftFooterPicture
+        Case 5: Set PicSlot = ws.PageSetup.CenterFooterPicture
+        Case 6: Set PicSlot = ws.PageSetup.RightFooterPicture
+    End Select
+    On Error GoTo 0
+End Function
+
+
+' The first sheet that is not one of the three common ones.
+Public Function FirstScheduleSheet(ByVal wb As Workbook) As Worksheet
+    Dim ws As Worksheet
+    For Each ws In wb.Worksheets
+        If Not IsCommonSheet(ws) Then
+            Set FirstScheduleSheet = ws
+            Exit Function
+        End If
+    Next ws
+End Function

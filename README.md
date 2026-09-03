@@ -42,7 +42,7 @@ all read the revision table below them.
 
 That's it. Nothing else is typed twice.
 
-## The three buttons
+## The four buttons
 
 **Set up / repair schedules** — opens every workbook in the folder, points its
 Metadata at this MPI, rebuilds the local references, clears leftover links from
@@ -109,8 +109,48 @@ by the tool. Everything else is a label or a note.
 | `B8` Backup before changes | `Yes` / `No` |
 | `B9` Refresh list on open | `No` by default. `Yes` reads every schedule at startup |
 | `B10` Full refresh every time | `No` by default, which reopens only files whose modified date changed since the last refresh. `Yes` always reopens everything |
-| `B11`, `B12` | when setup and the refresh last ran. Written by the tool, read only |
+| `B11` Header/footer source | the workbook to copy headers and footers from. Blank = the button asks, then fills this in |
+| `B12`, `B13` | when setup and the refresh last ran. Written by the tool, read only |
 | `F1:F...` Suitability Codes | the dropdown pushed into every schedule's Metadata sheet and revision table. Seeded with the ISO 19650 codes below; edit here and re-run setup to push the change to all files |
+
+## Headers and footers (security classification)
+
+**Copy headers & footers** takes one workbook's headers and footers and puts
+them on all the others. This is how `OFFICIAL`, `OFFICIAL-SENSITIVE`,
+`CONFIDENTIAL` (or nothing at all) gets applied consistently: set one schedule
+up by hand under Page Layout, then push it to the rest.
+
+Sheets are matched in this order:
+
+1. a source sheet with the **same name**
+2. `Front Cover` and `Revision Page` to their namesakes
+3. anything else to the source's schedule sheet
+
+Schedule tabs are not always called `Schedule`, which is why the name match
+comes first and the role fallback second.
+
+**Orientation, paper size and margins are never touched.** Only header and
+footer properties are written, so a landscape schedule stays landscape. Header
+and footer text is positioned relative to whatever page a sheet is set to, so
+the same banner comes out correct on portrait and landscape alike.
+
+### The logo in the footer
+
+A footer containing `&G` is showing an image, and that image lives inside each
+file. VBA cannot move image data between workbooks, so:
+
+- where the target **already has an image** (all files descended from the same
+  template do), its **size is matched to the source**, so a logo scaled to 20%
+  is 20% everywhere;
+- where the target **has none**, the source's original file path is tried,
+  which only works if that file is still on the PC, and the log says so if it
+  is not.
+
+The summary box flags when the source uses `&G` at all, so it is worth checking
+one print preview after the first run.
+
+The source workbook is remembered in `Setup!B11`, so re-running after a tweak
+is one click.
 
 ## Suitability codes
 
