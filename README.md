@@ -118,7 +118,9 @@ are reset to the default rather than left to be read wrong.
 | `B9` Refresh list on open | `No` by default. `Yes` reads every schedule at startup |
 | `B10` Full refresh every time | `No` by default, which reopens only files whose modified date changed since the last refresh. `Yes` always reopens everything |
 | `B11` Header/footer source | the workbook to copy headers and footers from. Blank = the button asks, then fills this in |
-| `B12`, `B13` | when setup and the refresh last ran. Written by the tool, read only |
+| `B12` Header image | logo for the top-right of the header. Blank = the button asks; decline and headers stay text only |
+| `B13` Header image scale % | that logo's size as a percentage of the image's own size. Default `20` |
+| `B14`, `B15` | when setup and the refresh last ran. Written by the tool, read only |
 | `F1:F...` Suitability Codes | the dropdown pushed into every schedule's Metadata sheet and revision table. Seeded with the ISO 19650 codes below; edit here and re-run setup to push the change to all files |
 
 ## Headers and footers (security classification)
@@ -142,23 +144,38 @@ footer properties are written, so a landscape schedule stays landscape. Header
 and footer text is positioned relative to whatever page a sheet is set to, so
 the same banner comes out correct on portrait and landscape alike.
 
-### The logo in the footer
+### The logo in the header
 
-A footer containing `&G` is showing an image, and that image lives inside each
-file. VBA cannot move image data between workbooks, so:
+Excel does not keep the original path of an embedded header image, so
+`PageSetup.RightHeaderPicture.Filename` comes back empty and the image cannot
+be read out of another workbook. It **can** be written, though, so the logo
+comes from a file you pick rather than from the source workbook.
 
-- where the target **already has an image** (all files descended from the same
-  template do), its **size is matched to the source**, so a logo scaled to 20%
-  is 20% everywhere;
-- where the target **has none**, the source's original file path is tried,
-  which only works if that file is still on the PC, and the log says so if it
-  is not.
+The first time you press the button it asks whether you want a logo, and if so
+which file. The answer is remembered on the Setup sheet, so it only asks once.
+The image goes in the **top right of the header**, scaled by
+`Setup!B13` (default **20%** of the image's own size). Any text already in the
+right-hand header section is kept, not thrown away.
 
-The summary box flags when the source uses `&G` at all, so it is worth checking
-one print preview after the first run.
+Keep the image somewhere everyone can reach: a company network path, or in the
+project folder itself. If it sits with the schedules only its file name is
+stored, so the setting survives the folder moving between Filery and local.
 
-The source workbook is remembered in `Setup!B11`, so re-running after a tweak
-is one click.
+### Every write is checked
+
+Header and footer text is read back after it is written and compared with what
+was asked for. Anything that did not take is reported as a **failure**, named
+on the Log sheet with what is there versus what should be. A file only counts
+as succeeded when the check passes.
+
+An earlier version wrapped the writes in `Application.PrintCommunication =
+False` for speed. That queues page-setup changes rather than applying them, and
+they can be silently dropped. It has been removed: 24 files is a few seconds
+either way, and a tool that reports work it did not do is worse than useless in
+a QA workflow.
+
+The source workbook is remembered in `Setup!B11`, the logo in `Setup!B12` and
+its scale in `Setup!B13`, so re-running after a tweak is one click.
 
 ## Suitability codes
 

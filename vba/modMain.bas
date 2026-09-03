@@ -19,9 +19,11 @@ Private Const R_OPT_BACKUP  As Long = 8
 Private Const R_OPT_AUTO    As Long = 9
 Private Const R_OPT_FULL    As Long = 10
 Private Const R_OPT_HFSRC   As Long = 11
-Private Const R_OPT_SETUP   As Long = 12   ' read only
-Private Const R_OPT_LIST    As Long = 13   ' read only
-Private Const R_REV_FIRST   As Long = 16   ' Revision..Description = 16..22
+Private Const R_OPT_HFIMG   As Long = 12
+Private Const R_OPT_HFSCALE As Long = 13
+Private Const R_OPT_SETUP   As Long = 14   ' read only
+Private Const R_OPT_LIST    As Long = 15   ' read only
+Private Const R_REV_FIRST   As Long = 18   ' Revision..Description = 18..24
 
 ' Setup sheet palette. Yellow means "you fill this in".
 Private Const CLR_INPUT     As Long = 14810111   ' RGB(255, 251, 225)
@@ -400,7 +402,9 @@ Public Sub CopyHeadersFooters()
     Dim backupDir As String
     Dim done As Long, skipped As Long, failed As Long
     Dim started As Double
-    Dim oneLog As String, gWarn As String
+    Dim oneLog As String
+    Dim imgPath As String
+    Dim imgW As Double, imgH As Double, scalePct As Double
 
     Set wsSetup = GetSheet(ThisWorkbook, SH_SETUP)
     If wsSetup Is Nothing Then
@@ -414,6 +418,18 @@ Public Sub CopyHeadersFooters()
     srcPath = HeaderSourcePath(wsSetup, folderPath)
     If Len(srcPath) = 0 Then Exit Sub
 
+    imgPath = HeaderImagePath(wsSetup, folderPath)
+    If Len(imgPath) > 0 Then
+        If Not MeasureImage(imgPath, imgW, imgH) Then
+            MsgBox "Could not read that image:" & vbCrLf & imgPath, vbExclamation
+            Exit Sub
+        End If
+        scalePct = CDbl(wsSetup.Cells(R_OPT_HFSCALE, 2).Value)
+        If scalePct <= 0 Then scalePct = 20
+        imgW = imgW * scalePct / 100
+        imgH = imgH * scalePct / 100
+    End If
+
     Set files = ScheduleFiles(folderPath)
     If files.Count = 0 Then
         MsgBox "No other Excel files found in:" & vbCrLf & folderPath, vbInformation
@@ -424,7 +440,9 @@ Public Sub CopyHeadersFooters()
               BaseName(srcPath) & vbCrLf & vbCrLf & _
               "into the other workbooks in this folder?" & vbCrLf & vbCrLf & _
               "Front Cover, Revision Page and the schedule sheets are matched up " & _
-              "separately. Whatever those sheets currently have is replaced.", _
+              "separately. Whatever those sheets currently have is replaced." & vbCrLf & vbCrLf & _
+              IIf(Len(imgPath) > 0, "Header image: " & BaseName(imgPath) & " at " & _
+                  CStr(scalePct) & "%, top right.", "No header image set."), _
               vbQuestion + vbYesNo, "Copy headers & footers") = vbNo Then Exit Sub
 
     If UCase$(Trim$(CStr(wsSetup.Cells(R_OPT_BACKUP, 2).Value))) <> "NO" Then
@@ -448,7 +466,6 @@ Public Sub CopyHeadersFooters()
     End If
 
     LogLine BaseName(srcPath), "Source", SourceSummary(wbSrc)
-    gWarn = GraphicWarning(wbSrc)
 
     For i = 1 To files.Count
         fileName = files(i)
@@ -469,10 +486,15 @@ Public Sub CopyHeadersFooters()
                 failed = failed + 1
                 LogLine fileName, "FAILED", "Could not open the file."
             Else
-                oneLog = OldHeaderFooter(wbTgt) & " -> " & CopyHeadersFootersTo(wbSrc, wbTgt)
+                oneLog = CopyHeadersFootersTo(wbSrc, wbTgt, imgPath, imgW, imgH)
                 wbTgt.Close SaveChanges:=True
-                done = done + 1
-                LogLine fileName, "OK", oneLog
+                If InStr(1, oneLog, "PROBLEM:", vbTextCompare) > 0 Then
+                    failed = failed + 1
+                    LogLine fileName, "FAILED", oneLog
+                Else
+                    done = done + 1
+                    LogLine fileName, "OK", oneLog
+                End If
             End If
         End If
     Next i
@@ -482,7 +504,9 @@ Public Sub CopyHeadersFooters()
     EndQuiet
 
     ShowSummary "Copy headers & footers", done, skipped, failed, Timer - started, _
-                gWarn & IIf(Len(backupDir) > 0, "Backup: " & backupDir, "")
+                IIf(Len(imgPath) > 0, "Header image set from " & BaseName(imgPath) & _
+                    ". Check one print preview." & vbCrLf & vbCrLf, "") & _
+                IIf(Len(backupDir) > 0, "Backup: " & backupDir, "")
     Exit Sub
 
 Fail:
@@ -527,6 +551,50 @@ Private Function HeaderSourcePath(ByVal wsSetup As Worksheet, ByVal folderPath A
 End Function
 
 
+' The logo for the top-right of the header. Blank means the user is asked
+' once; cancelling the picker means "no image", which is a valid answer.
+Private Function HeaderImagePath(ByVal wsSetup As Worksheet, ByVal folderPath As String) As String
+    Dim v As String, candidate As String
+
+    v = Trim$(CStr(wsSetup.Cells(R_OPT_HFIMG, 2).Value))
+
+    If Len(v) > 0 Then
+        If FileExists(v) Then
+            HeaderImagePath = v
+            Exit Function
+        End If
+        candidate = EndSep(folderPath) & v
+        If FileExists(candidate) Then
+            HeaderImagePath = candidate
+            Exit Function
+        End If
+        MsgBox "The header image on the Setup sheet is not where it says:" & vbCrLf & vbCrLf & _
+               v & vbCrLf & vbCrLf & "Pick it again, or cancel to carry on without one.", _
+               vbExclamation, "Header image"
+    Else
+        If MsgBox("Put a logo in the top-right of the header?" & vbCrLf & vbCrLf & _
+                  "Yes to pick the image file. No to leave headers as text only." & vbCrLf & _
+                  "Whatever you choose is remembered on the Setup sheet.", _
+                  vbQuestion + vbYesNo, "Header image") = vbNo Then Exit Function
+    End If
+
+    candidate = PickImage("Pick the header logo", folderPath)
+    If Len(candidate) = 0 Then Exit Function
+
+    ' Store just the name when it sits with the schedules, so the setting
+    ' survives the folder moving between Filery and local.
+    If StrComp(EndSep(folderPath), _
+               EndSep(Left$(candidate, InStrRev(candidate, Application.PathSeparator))), _
+               vbTextCompare) = 0 Then
+        wsSetup.Cells(R_OPT_HFIMG, 2).Value = BaseName(candidate)
+    Else
+        wsSetup.Cells(R_OPT_HFIMG, 2).Value = candidate
+    End If
+
+    HeaderImagePath = candidate
+End Function
+
+
 Private Function SourceSummary(ByVal wbSrc As Workbook) As String
     Dim ws As Worksheet
     Dim h As HFSet
@@ -549,36 +617,8 @@ Private Function SourceSummary(ByVal wbSrc As Workbook) As String
 End Function
 
 
-' What the target had before, so the log is a record you can undo from.
-Private Function OldHeaderFooter(ByVal wb As Workbook) As String
-    Dim ws As Worksheet
-    Dim h As HFSet
-
-    Set ws = GetSheet(wb, SH_FRONT)
-    If ws Is Nothing Then Set ws = FirstScheduleSheet(wb)
-    If ws Is Nothing Then Exit Function
-
-    h = CaptureHF(ws)
-    OldHeaderFooter = "was " & DescribeHF(h)
-End Function
 
 
-' &G is a picture placeholder. The image lives inside each file and cannot be
-' carried across, so say so rather than let someone find out at print time.
-Private Function GraphicWarning(ByVal wbSrc As Workbook) As String
-    Dim ws As Worksheet
-    Dim h As HFSet
-
-    For Each ws In wbSrc.Worksheets
-        h = CaptureHF(ws)
-        If UsesGraphic(h) Then
-            GraphicWarning = "The source uses a header/footer image (&G). The placeholder " & _
-                             "was copied, but each file keeps its own image - check one " & _
-                             "print preview." & vbCrLf & vbCrLf
-            Exit Function
-        End If
-    Next ws
-End Function
 
 
 Public Sub Auto_Open()
@@ -1128,6 +1168,8 @@ Private Sub BuildSetupSheet(ByVal ws As Worksheet)
     ws.Cells(R_OPT_AUTO, 1).Value = "Refresh list on open"
     ws.Cells(R_OPT_FULL, 1).Value = "Full refresh every time"
     ws.Cells(R_OPT_HFSRC, 1).Value = "Header/footer source"
+    ws.Cells(R_OPT_HFIMG, 1).Value = "Header image"
+    ws.Cells(R_OPT_HFSCALE, 1).Value = "Header image scale %"
     ws.Cells(R_OPT_SETUP, 1).Value = "Last setup run"
     ws.Cells(R_OPT_LIST, 1).Value = "Last list refresh"
 
@@ -1136,6 +1178,8 @@ Private Sub BuildSetupSheet(ByVal ws As Worksheet)
     InputCell ws.Cells(R_OPT_AUTO, 2)
     InputCell ws.Cells(R_OPT_FULL, 2)
     InputCell ws.Cells(R_OPT_HFSRC, 2)
+    InputCell ws.Cells(R_OPT_HFIMG, 2)
+    InputCell ws.Cells(R_OPT_HFSCALE, 2)
     ReadOnlyCell ws.Cells(R_OPT_SETUP, 2)
     ReadOnlyCell ws.Cells(R_OPT_LIST, 2)
 
@@ -1147,6 +1191,8 @@ Private Sub BuildSetupSheet(ByVal ws As Worksheet)
     NormaliseYesNo ws.Cells(R_OPT_FULL, 2), "No"
 
     If IsNumeric(ws.Cells(R_OPT_HFSRC, 2).Value) Then ws.Cells(R_OPT_HFSRC, 2).ClearContents
+    If Not IsNumeric(ws.Cells(R_OPT_HFSCALE, 2).Value) Then ws.Cells(R_OPT_HFSCALE, 2).Value = 20
+    If ws.Cells(R_OPT_HFSCALE, 2).Value <= 0 Then ws.Cells(R_OPT_HFSCALE, 2).Value = 20
 
     ' Written by the tool on its next run; whatever is there now is stale.
     ws.Cells(R_OPT_SETUP, 2).ClearContents
@@ -1161,6 +1207,8 @@ Private Sub BuildSetupSheet(ByVal ws As Worksheet)
     Note ws.Cells(R_OPT_AUTO, 3), "reads every schedule when this file is opened"
     Note ws.Cells(R_OPT_FULL, 3), "No = only reopen files that changed since last time"
     Note ws.Cells(R_OPT_HFSRC, 3), "the workbook to copy headers/footers from; blank = ask"
+    Note ws.Cells(R_OPT_HFIMG, 3), "logo for the top-right of the header; blank = ask, or leave for none"
+    Note ws.Cells(R_OPT_HFSCALE, 3), "size of that logo as a percentage of the image's own size"
 
     ' --- New revision ------------------------------------------------------
     SectionHeader ws, R_REV_FIRST - 1, "NEW REVISION"

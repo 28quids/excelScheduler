@@ -351,6 +351,20 @@ Public Function PickWorkbook(ByVal promptText As String, ByVal startFolder As St
 End Function
 
 
+Public Function PickImage(ByVal promptText As String, ByVal startFolder As String) As String
+    Dim fd As FileDialog
+    Set fd = Application.FileDialog(msoFileDialogFilePicker)
+    With fd
+        .Title = promptText
+        .AllowMultiSelect = False
+        .Filters.Clear
+        .Filters.Add "Images", "*.png;*.jpg;*.jpeg;*.gif;*.bmp;*.emf;*.wmf"
+        If Len(startFolder) > 0 Then .InitialFileName = EndSep(startFolder)
+        If .Show = -1 Then PickImage = .SelectedItems(1)
+    End With
+End Function
+
+
 Public Function PickFolder(ByVal promptText As String) As String
     Dim fd As FileDialog
     Set fd = Application.FileDialog(msoFileDialogFolderPicker)

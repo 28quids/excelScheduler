@@ -861,16 +861,18 @@ Finish:
 End Function
 
 
-' Writes one sheet's header and footer.
+' Writes one sheet's header and footer, then reads it back and checks it.
 '
-' PageSetup talks to the printer driver on every single property, which is
-' what makes it crawl. PrintCommunication off turns the whole block into one
-' round trip.
+' An earlier version wrapped this in Application.PrintCommunication = False for
+' speed. That is a documented optimisation but it queues the changes rather
+' than applying them, and they can be dropped. Correctness first: 24 files is
+' a few seconds either way.
+'
+' Returns "" on success, or a PROBLEM line naming what did not stick.
 Public Function ApplyHF(ByVal ws As Worksheet, ByRef h As HFSet) As String
     If Not h.Valid Then Exit Function
 
     On Error GoTo HFError
-    Application.PrintCommunication = False
 
     With ws.PageSetup
         .DifferentFirstPageHeaderFooter = h.DiffFirstPage
@@ -906,24 +908,42 @@ Public Function ApplyHF(ByVal ws As Worksheet, ByRef h As HFSet) As String
         On Error GoTo HFError
     End With
 
-    Application.PrintCommunication = True
+    ApplyHF = VerifyHF(ws, h)
     Exit Function
 
 HFError:
-    Application.PrintCommunication = True
-    ApplyHF = "'" & ws.Name & "' failed: " & Err.Description & ". "
+    ApplyHF = "PROBLEM: '" & ws.Name & "' error " & Err.Number & " - " & Err.Description & ". "
 End Function
 
 
-' True if a header or footer uses &G, the picture placeholder. The picture
-' itself lives in the file and cannot be copied between workbooks, so the
-' target keeps whichever image it already has.
-Public Function UsesGraphic(ByRef h As HFSet) As Boolean
-    Dim all As String
-    all = h.LeftHeader & h.CenterHeader & h.RightHeader & _
-          h.LeftFooter & h.CenterFooter & h.RightFooter
-    UsesGraphic = (InStr(1, all, "&G", vbTextCompare) > 0)
+' Reads the six sections back and reports any that did not take. This is the
+' difference between the tool saying it worked and it actually having worked.
+Private Function VerifyHF(ByVal ws As Worksheet, ByRef h As HFSet) As String
+    Dim bad As String
+
+    On Error Resume Next
+    With ws.PageSetup
+        bad = bad & Mismatch("LeftHeader", .LeftHeader, h.LeftHeader)
+        bad = bad & Mismatch("CenterHeader", .CenterHeader, h.CenterHeader)
+        bad = bad & Mismatch("RightHeader", .RightHeader, h.RightHeader)
+        bad = bad & Mismatch("LeftFooter", .LeftFooter, h.LeftFooter)
+        bad = bad & Mismatch("CenterFooter", .CenterFooter, h.CenterFooter)
+        bad = bad & Mismatch("RightFooter", .RightFooter, h.RightFooter)
+    End With
+    On Error GoTo 0
+
+    If Len(bad) > 0 Then _
+        VerifyHF = "PROBLEM: '" & ws.Name & "' did not take - " & bad
 End Function
+
+
+Private Function Mismatch(ByVal what As String, ByVal got As String, ByVal want As String) As String
+    If StrComp(Trim$(got), Trim$(want), vbBinaryCompare) <> 0 Then
+        Mismatch = what & " is [" & got & "] not [" & want & "]; "
+    End If
+End Function
+
+
 
 
 ' A one-line summary of a header/footer, for the log.
@@ -951,7 +971,9 @@ End Function
 ' margins are left alone, so a landscape schedule stays landscape. Header and
 ' footer text is positioned relative to whatever page the sheet is set to, so
 ' the same banner is correct on both.
-Public Function CopyHeadersFootersTo(ByVal wbSrc As Workbook, ByVal wbTgt As Workbook) As String
+Public Function CopyHeadersFootersTo(ByVal wbSrc As Workbook, ByVal wbTgt As Workbook, _
+                                     ByVal imgPath As String, ByVal imgW As Double, _
+                                     ByVal imgH As Double) As String
     Dim wsTgt As Worksheet, wsSrc As Worksheet
     Dim h As HFSet
     Dim log As String
@@ -966,7 +988,7 @@ Public Function CopyHeadersFootersTo(ByVal wbSrc As Workbook, ByVal wbTgt As Wor
                 h = CaptureHF(wsSrc)
                 If h.Valid Then
                     log = log & ApplyHF(wsTgt, h)
-                    log = log & CopyHFPictures(wsSrc, wsTgt)
+                    log = log & ApplyHeaderImage(wsTgt, imgPath, imgW, imgH)
                     n = n + 1
                 End If
             End If
@@ -1003,74 +1025,64 @@ Private Function MatchSourceSheet(ByVal wbSrc As Workbook, ByVal wsTgt As Worksh
 End Function
 
 
-' Matches the size of the header/footer images, so a logo scaled to 20% in the
-' source is 20% everywhere.
+' Puts an image in the top-right of the header at the given size.
 '
-' The image data itself lives inside each file and cannot be moved between
-' workbooks from VBA. Where the target already has an image, only its size is
-' matched. Where it has none, the source's original file path is tried, which
-' works only if that file is still on this PC.
-'
-' Runs with printer communication back on: picture properties need it.
-Private Function CopyHFPictures(ByVal wsSrc As Worksheet, ByVal wsTgt As Worksheet) As String
-    Dim i As Long
-    Dim log As String
+' Header images cannot be read out of another workbook: Excel does not keep
+' the original path, so PageSetup.RightHeaderPicture.Filename comes back empty
+' for an embedded picture. It CAN be written, though, so the image is taken
+' from a file the user picks rather than from the source workbook.
+Public Function ApplyHeaderImage(ByVal ws As Worksheet, ByVal imgPath As String, _
+                                 ByVal wPts As Double, ByVal hPts As Double) As String
+    Dim rh As String
 
-    For i = 1 To 6
-        log = log & CopyOnePicture(wsSrc, wsTgt, i)
-    Next i
+    If Len(imgPath) = 0 Then Exit Function
 
-    CopyHFPictures = log
-End Function
+    On Error GoTo ImgError
 
+    ' &G is the placeholder that makes the picture show. Keep any text that is
+    ' already in the right section rather than throwing it away.
+    rh = ws.PageSetup.RightHeader
+    If InStr(1, rh, "&G", vbTextCompare) = 0 Then ws.PageSetup.RightHeader = "&G" & rh
 
-Private Function CopyOnePicture(ByVal wsSrc As Worksheet, ByVal wsTgt As Worksheet, _
-                                ByVal slot As Long) As String
-    Dim pSrc As Graphic, pTgt As Graphic
-    Dim srcFile As String, tgtFile As String
+    With ws.PageSetup.RightHeaderPicture
+        .fileName = imgPath
+        .LockAspectRatio = msoFalse
+        .Width = wPts
+        .Height = hPts
+    End With
 
-    On Error GoTo Finish
-    Set pSrc = PicSlot(wsSrc, slot)
-    Set pTgt = PicSlot(wsTgt, slot)
-    If pSrc Is Nothing Or pTgt Is Nothing Then GoTo Finish
-
-    On Error Resume Next
-    srcFile = pSrc.fileName
-    tgtFile = pTgt.fileName
-    Err.Clear
-    On Error GoTo Finish
-
-    If Len(srcFile) = 0 Then GoTo Finish
-
-    If Len(tgtFile) = 0 Then
-        ' No image in the target. Only re-insertable if the original still exists.
-        If Not FileExists(srcFile) Then
-            CopyOnePicture = "'" & wsTgt.Name & "' has no header/footer image and the " & _
-                             "source image file is not on this PC - add it by hand. "
-            GoTo Finish
-        End If
-        pTgt.fileName = srcFile
+    If InStr(1, ws.PageSetup.RightHeader, "&G", vbTextCompare) = 0 Then
+        ApplyHeaderImage = "PROBLEM: '" & ws.Name & "' header image did not take. "
     End If
+    Exit Function
 
-    pTgt.LockAspectRatio = pSrc.LockAspectRatio
-    pTgt.Height = pSrc.Height
-    pTgt.Width = pSrc.Width
-
-Finish:
-    Err.Clear
+ImgError:
+    ApplyHeaderImage = "PROBLEM: '" & ws.Name & "' image error " & Err.Number & _
+                       " - " & Err.Description & ". "
 End Function
 
 
-Private Function PicSlot(ByVal ws As Worksheet, ByVal slot As Long) As Graphic
+' Native size of an image file, in points. Measured by dropping it on a
+' scratch sheet, which is the only reliable way to ask Excel.
+Public Function MeasureImage(ByVal imgPath As String, ByRef wPts As Double, _
+                             ByRef hPts As Double) As Boolean
+    Dim ws As Worksheet
+    Dim shp As Shape
+
+    If Not FileExists(imgPath) Then Exit Function
+
+    On Error GoTo Clean
+    Set ws = ThisWorkbook.Worksheets.Add
+    Set shp = ws.Shapes.AddPicture(fileName:=imgPath, LinkToFile:=msoFalse, _
+                                   SaveWithDocument:=msoTrue, Left:=0, Top:=0, _
+                                   Width:=-1, Height:=-1)
+    wPts = shp.Width
+    hPts = shp.Height
+    MeasureImage = (wPts > 0 And hPts > 0)
+
+Clean:
     On Error Resume Next
-    Select Case slot
-        Case 1: Set PicSlot = ws.PageSetup.LeftHeaderPicture
-        Case 2: Set PicSlot = ws.PageSetup.CenterHeaderPicture
-        Case 3: Set PicSlot = ws.PageSetup.RightHeaderPicture
-        Case 4: Set PicSlot = ws.PageSetup.LeftFooterPicture
-        Case 5: Set PicSlot = ws.PageSetup.CenterFooterPicture
-        Case 6: Set PicSlot = ws.PageSetup.RightFooterPicture
-    End Select
+    If Not ws Is Nothing Then ws.Delete
     On Error GoTo 0
 End Function
 
