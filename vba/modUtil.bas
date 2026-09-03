@@ -12,6 +12,10 @@ Public Const SH_SETUP As String = "Setup"
 Public Const SH_LIST  As String = "ScheduleList"
 Public Const SH_LOG   As String = "Log"
 
+' Shown on the Setup sheet and in the install box, so "which build is loaded"
+' is answerable at a glance after a re-import.
+Public Const TOOL_VERSION As String = "1.1"
+
 ' How far down/across we look for the "SCHEDULE OF ..." title cell.
 Public Const TITLE_MAX_ROW As Long = 60
 Public Const TITLE_MAX_COL As Long = 10

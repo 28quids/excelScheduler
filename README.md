@@ -34,6 +34,18 @@ all read the revision table below them.
 5. Back in Excel: `Alt+F8` → run **InstallTool**.
 6. Save. This is now your company template.
 
+### Re-installing a newer version
+
+**Remove `modUtil`, `modSchedule` and `modMain` before importing the new
+ones.** Importing a `.bas` whose module already exists does not replace it, it
+adds `modMain1` alongside `modMain`, and which copy runs is anyone's guess.
+
+Import **all three** every time. They change together, and a mismatched set
+fails in confusing ways rather than obviously.
+
+The install box and cell `H24` on the Setup sheet both show the tool version.
+If that number is not what you expect, the import did not take.
+
 ## Per project
 
 1. Copy the template MPI into the project folder alongside the schedules.
@@ -102,6 +114,11 @@ the suitability codes in column F and the buttons to the right.
 
 **Anything shaded yellow is yours to fill in.** Grey italic cells are written
 by the tool. Everything else is a label or a note.
+
+Options are **written** at fixed rows but **read** by their label in column A.
+Every time an option has been added, the rows below it have shifted and the old
+values ended up under new meanings. Reading by label means an older sheet still
+reads correctly and `InstallTool` simply tidies the layout.
 
 `InstallTool` rebuilds this sheet each time it runs. It clears columns A, C and
 H and rewrites them, because option rows move between versions and a label left

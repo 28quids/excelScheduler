@@ -25,6 +25,20 @@ Private Const R_OPT_SETUP   As Long = 14   ' read only
 Private Const R_OPT_LIST    As Long = 15   ' read only
 Private Const R_REV_FIRST   As Long = 18   ' Revision..Description = 18..24
 
+' Option rows are WRITTEN at the constants above but READ by these labels.
+' The rows have moved every time an option was added, and each move left the
+' previous value sitting under a new meaning. Reading by label means an older
+' sheet still reads correctly, and InstallTool tidies the layout.
+Private Const LBL_FOLDER  As String = "Schedules folder"
+Private Const LBL_BACKUP  As String = "Backup before changes"
+Private Const LBL_AUTO    As String = "Refresh list on open"
+Private Const LBL_FULL    As String = "Full refresh every time"
+Private Const LBL_HFSRC   As String = "Header/footer source"
+Private Const LBL_HFIMG   As String = "Header image"
+Private Const LBL_HFSCALE As String = "Header image scale %"
+Private Const LBL_SETUP   As String = "Last setup run"
+Private Const LBL_LIST    As String = "Last list refresh"
+
 ' Setup sheet palette. Yellow means "you fill this in".
 Private Const CLR_INPUT     As Long = 14810111   ' RGB(255, 251, 225)
 Private Const CLR_READONLY  As Long = 15921906   ' RGB(242, 242, 242)
@@ -74,7 +88,7 @@ Public Sub InstallTool()
     ActiveWindow.DisplayGridlines = False
     On Error GoTo 0
 
-    MsgBox "Ready." & vbCrLf & vbCrLf & _
+    MsgBox "Ready. Schedule tool version " & TOOL_VERSION & "." & vbCrLf & vbCrLf & _
            "1. Fill in Client, Project Name and Project Number on this sheet." & vbCrLf & _
            "2. Save this file into the project folder with the schedules." & vbCrLf & _
            "3. Press 'Set up / repair schedules'.", vbInformation, "Schedule tool"
@@ -127,7 +141,7 @@ Public Sub SetupProject()
 
     statuses = GatherStatuses(wsSetup)
 
-    If UCase$(Trim$(CStr(wsSetup.Cells(R_OPT_BACKUP, 2).Value))) <> "NO" Then
+    If UCase$(Trim$(CStr(Opt(wsSetup, LBL_BACKUP, R_OPT_BACKUP).Value))) <> "NO" Then
         backupDir = EndSep(folderPath) & "_backup " & Format$(Now, "yyyy-mm-dd hh-nn")
         On Error Resume Next
         MkDir backupDir
@@ -180,7 +194,7 @@ Public Sub SetupProject()
     Next i
 
     ProgressDone
-    wsSetup.Cells(R_OPT_SETUP, 2).Value = Format$(Now, "dd/mm/yyyy hh:nn")
+    Opt(wsSetup, LBL_SETUP, R_OPT_SETUP).Value = Format$(Now, "dd/mm/yyyy hh:nn")
     EndQuiet
 
     ShowSummary "Set up / repair schedules", done, skipped, failed, _
@@ -220,7 +234,7 @@ Public Sub RefreshScheduleList()
     mpiName = Trim$(CStr(wsSetup.Range("B3").Value))
     mpiNo = Trim$(CStr(wsSetup.Range("B4").Value))
     mpiClient = Trim$(CStr(wsSetup.Range("B1").Value))
-    fullRefresh = (UCase$(Trim$(CStr(wsSetup.Cells(R_OPT_FULL, 2).Value))) = "YES")
+    fullRefresh = (UCase$(Trim$(CStr(Opt(wsSetup, LBL_FULL, R_OPT_FULL).Value))) = "YES")
 
     Set files = ScheduleFiles(folderPath)
     Set keep = SnapshotList(wsList)
@@ -275,7 +289,7 @@ Public Sub RefreshScheduleList()
     FormatList wsList, r - 1
 
     ProgressDone
-    wsSetup.Cells(R_OPT_LIST, 2).Value = Format$(Now, "dd/mm/yyyy hh:nn")
+    Opt(wsSetup, LBL_LIST, R_OPT_LIST).Value = Format$(Now, "dd/mm/yyyy hh:nn")
     EndQuiet
 
     ShowSummary "Refresh schedule list", readCount, reused, failed, Timer - started, _
@@ -424,7 +438,7 @@ Public Sub CopyHeadersFooters()
             MsgBox "Could not read that image:" & vbCrLf & imgPath, vbExclamation
             Exit Sub
         End If
-        scalePct = CDbl(wsSetup.Cells(R_OPT_HFSCALE, 2).Value)
+        scalePct = CDbl(Opt(wsSetup, LBL_HFSCALE, R_OPT_HFSCALE).Value)
         If scalePct <= 0 Then scalePct = 20
         imgW = imgW * scalePct / 100
         imgH = imgH * scalePct / 100
@@ -445,7 +459,7 @@ Public Sub CopyHeadersFooters()
                   CStr(scalePct) & "%, top right.", "No header image set."), _
               vbQuestion + vbYesNo, "Copy headers & footers") = vbNo Then Exit Sub
 
-    If UCase$(Trim$(CStr(wsSetup.Cells(R_OPT_BACKUP, 2).Value))) <> "NO" Then
+    If UCase$(Trim$(CStr(Opt(wsSetup, LBL_BACKUP, R_OPT_BACKUP).Value))) <> "NO" Then
         backupDir = EndSep(folderPath) & "_backup " & Format$(Now, "yyyy-mm-dd hh-nn")
         On Error Resume Next
         MkDir backupDir
@@ -522,7 +536,7 @@ End Sub
 Private Function HeaderSourcePath(ByVal wsSetup As Worksheet, ByVal folderPath As String) As String
     Dim v As String, candidate As String
 
-    v = Trim$(CStr(wsSetup.Cells(R_OPT_HFSRC, 2).Value))
+    v = Trim$(CStr(Opt(wsSetup, LBL_HFSRC, R_OPT_HFSRC).Value))
 
     If Len(v) > 0 Then
         If FileExists(v) Then
@@ -542,9 +556,9 @@ Private Function HeaderSourcePath(ByVal wsSetup As Worksheet, ByVal folderPath A
     ' Store just the name when it lives in the schedules folder, so the setting
     ' survives the folder moving between Filery and local.
     If StrComp(EndSep(folderPath), EndSep(Left$(candidate, InStrRev(candidate, Application.PathSeparator))), vbTextCompare) = 0 Then
-        wsSetup.Cells(R_OPT_HFSRC, 2).Value = BaseName(candidate)
+        Opt(wsSetup, LBL_HFSRC, R_OPT_HFSRC).Value = BaseName(candidate)
     Else
-        wsSetup.Cells(R_OPT_HFSRC, 2).Value = candidate
+        Opt(wsSetup, LBL_HFSRC, R_OPT_HFSRC).Value = candidate
     End If
 
     HeaderSourcePath = candidate
@@ -556,7 +570,7 @@ End Function
 Private Function HeaderImagePath(ByVal wsSetup As Worksheet, ByVal folderPath As String) As String
     Dim v As String, candidate As String
 
-    v = Trim$(CStr(wsSetup.Cells(R_OPT_HFIMG, 2).Value))
+    v = Trim$(CStr(Opt(wsSetup, LBL_HFIMG, R_OPT_HFIMG).Value))
 
     If Len(v) > 0 Then
         If FileExists(v) Then
@@ -586,9 +600,9 @@ Private Function HeaderImagePath(ByVal wsSetup As Worksheet, ByVal folderPath As
     If StrComp(EndSep(folderPath), _
                EndSep(Left$(candidate, InStrRev(candidate, Application.PathSeparator))), _
                vbTextCompare) = 0 Then
-        wsSetup.Cells(R_OPT_HFIMG, 2).Value = BaseName(candidate)
+        Opt(wsSetup, LBL_HFIMG, R_OPT_HFIMG).Value = BaseName(candidate)
     Else
-        wsSetup.Cells(R_OPT_HFIMG, 2).Value = candidate
+        Opt(wsSetup, LBL_HFIMG, R_OPT_HFIMG).Value = candidate
     End If
 
     HeaderImagePath = candidate
@@ -625,7 +639,7 @@ Public Sub Auto_Open()
     Dim wsSetup As Worksheet
     Set wsSetup = GetSheet(ThisWorkbook, SH_SETUP)
     If wsSetup Is Nothing Then Exit Sub
-    If UCase$(Trim$(CStr(wsSetup.Cells(R_OPT_AUTO, 2).Value))) = "YES" Then
+    If UCase$(Trim$(CStr(Opt(wsSetup, LBL_AUTO, R_OPT_AUTO).Value))) = "YES" Then
         ' Never nag on startup - if the folder is not known, just skip.
         If Len(SchedulesFolder(False)) > 0 Then RefreshScheduleList
     End If
@@ -982,7 +996,7 @@ Private Function SchedulesFolder(Optional ByVal askIfUnknown As Boolean = True) 
     Set wsSetup = GetSheet(ThisWorkbook, SH_SETUP)
 
     If Not wsSetup Is Nothing Then
-        v = Trim$(CStr(wsSetup.Cells(R_OPT_FOLDER, 2).Value))
+        v = Trim$(CStr(Opt(wsSetup, LBL_FOLDER, R_OPT_FOLDER).Value))
         If Len(v) > 0 Then
             If FolderExists(v) Then
                 SchedulesFolder = EndSep(v)
@@ -1004,7 +1018,7 @@ Private Function SchedulesFolder(Optional ByVal askIfUnknown As Boolean = True) 
 
     resolved = ResolveLocalFolder(v)
     If Len(resolved) > 0 Then
-        If Not wsSetup Is Nothing Then wsSetup.Cells(R_OPT_FOLDER, 2).Value = resolved
+        If Not wsSetup Is Nothing Then Opt(wsSetup, LBL_FOLDER, R_OPT_FOLDER).Value = resolved
         SchedulesFolder = EndSep(resolved)
         Exit Function
     End If
@@ -1021,7 +1035,7 @@ Private Function SchedulesFolder(Optional ByVal askIfUnknown As Boolean = True) 
     resolved = PickFolder("Folder containing the schedules")
     If Len(resolved) = 0 Then Exit Function
 
-    If Not wsSetup Is Nothing Then wsSetup.Cells(R_OPT_FOLDER, 2).Value = resolved
+    If Not wsSetup Is Nothing Then Opt(wsSetup, LBL_FOLDER, R_OPT_FOLDER).Value = resolved
     SchedulesFolder = EndSep(resolved)
 End Function
 
@@ -1118,6 +1132,20 @@ Private Function GatherStatuses(ByVal wsSetup As Worksheet) As Variant
         n = n + 1
     Next k
     GatherStatuses = out
+End Function
+
+
+' The value cell for an option, found by its label in column A. Falls back to
+' the row the current layout puts it on, for a sheet being built from scratch.
+Private Function Opt(ByVal wsSetup As Worksheet, ByVal label As String, _
+                     ByVal fallbackRow As Long) As Range
+    Dim lbl As Range
+    Set lbl = FindLabel(wsSetup, label, 6, 40)
+    If lbl Is Nothing Then
+        Set Opt = wsSetup.Cells(fallbackRow, 2)
+    Else
+        Set Opt = lbl.Offset(0, 1)
+    End If
 End Function
 
 
@@ -1240,6 +1268,7 @@ Private Sub BuildSetupSheet(ByVal ws As Worksheet)
     Note ws.Range("H19"), "then press 'Add revision to ticked'. Blanks fall back to the block above."
     Note ws.Range("H21"), "Security classification: set the header/footer on one workbook by hand under"
     Note ws.Range("H22"), "Page Layout, then press 'Copy headers && footers' to push it to the rest."
+    Note ws.Range("H24"), "Schedule tool version " & TOOL_VERSION
 
     ' --- Layout ------------------------------------------------------------
     ws.Columns("A").ColumnWidth = 24
