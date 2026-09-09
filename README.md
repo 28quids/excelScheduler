@@ -51,7 +51,7 @@ If that number is not what you expect, the import did not take.
 One place, the declarations at the top of `vba/modUtil.bas`:
 
 ```vba
-Public Const TOOL_VERSION As String = "1.3"
+Public Const TOOL_VERSION As String = "1.0"
 ```
 
 That single constant feeds both the "Ready. Schedule tool version ..." box and
