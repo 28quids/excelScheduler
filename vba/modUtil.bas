@@ -8,6 +8,7 @@ Option Explicit
 Public Const SH_FRONT As String = "Front Cover"
 Public Const SH_META  As String = "Metadata"
 Public Const SH_REV   As String = "Revision Page"
+Public Const SH_SCHEDULE As String = "Schedule"
 Public Const SH_SETUP As String = "Setup"
 Public Const SH_LIST  As String = "ScheduleList"
 Public Const SH_LOG   As String = "Log"

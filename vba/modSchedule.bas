@@ -1657,3 +1657,122 @@ Private Sub NameRevisionTable(ByVal wsRev As Worksheet)
     lo.Name = "RevisionTable"
     On Error GoTo 0
 End Sub
+
+
+' ===========================================================================
+' Sheet tidying
+'
+' Puts every workbook in the same order - Front Cover, Revision Page, the
+' schedule, then Metadata hidden at the end - and gives a lone schedule sheet
+' still called Sheet1 a proper name.
+'
+' Only names, order and visibility change. Nothing on any sheet is touched.
+' ===========================================================================
+Public Function TidySheetsIn(ByVal wb As Workbook) As String
+    Dim log As String
+
+    log = log & NameScheduleSheet(wb)
+    log = log & OrderSheets(wb)
+    log = log & HideMetadata(wb)
+
+    TidySheetsIn = log
+End Function
+
+
+' A workbook with exactly one schedule sheet gets it called "Schedule".
+' One with several is left alone: they cannot all take the same name, and
+' their names are the only thing telling them apart.
+Private Function NameScheduleSheet(ByVal wb As Workbook) As String
+    Dim ws As Worksheet
+    Dim only As Worksheet
+    Dim n As Long
+    Dim wasCalled As String
+
+    For Each ws In wb.Worksheets
+        If Not IsCommonSheet(ws) Then
+            n = n + 1
+            Set only = ws
+        End If
+    Next ws
+
+    If n = 0 Then
+        NameScheduleSheet = "No schedule sheet at all. "
+        Exit Function
+    End If
+
+    If n > 1 Then
+        NameScheduleSheet = n & " schedule sheets - names left as they are. "
+        Exit Function
+    End If
+
+    If StrComp(only.Name, SH_SCHEDULE, vbTextCompare) = 0 Then Exit Function
+
+    wasCalled = only.Name
+    On Error GoTo Failed
+    only.Name = SH_SCHEDULE
+    NameScheduleSheet = "Renamed '" & wasCalled & "' to '" & SH_SCHEDULE & "'. "
+    Exit Function
+
+Failed:
+    NameScheduleSheet = "PROBLEM: could not rename '" & wasCalled & "' - " & Err.Description & ". "
+End Function
+
+
+' Front Cover first, Revision Page second, Metadata last. Schedule sheets keep
+' their existing order in between.
+Private Function OrderSheets(ByVal wb As Workbook) As String
+    Dim ws As Worksheet
+    Dim wanted As Variant
+    Dim i As Long, pos As Long
+
+    On Error GoTo Failed
+
+    wanted = Array(SH_FRONT, SH_REV)
+    For i = LBound(wanted) To UBound(wanted)
+        Set ws = GetSheet(wb, CStr(wanted(i)))
+        If Not ws Is Nothing Then
+            pos = pos + 1
+            If ws.Index <> pos Then ws.Move Before:=wb.Worksheets(pos)
+        End If
+    Next i
+
+    Set ws = GetSheet(wb, SH_META)
+    If Not ws Is Nothing Then
+        If ws.Index <> wb.Worksheets.Count Then _
+            ws.Move After:=wb.Worksheets(wb.Worksheets.Count)
+    End If
+    Exit Function
+
+Failed:
+    OrderSheets = "PROBLEM: could not reorder the sheets - " & Err.Description & _
+                  " (is the workbook structure protected?). "
+End Function
+
+
+' Metadata is written by the tool and read by formulas; nobody needs to look
+' at it. Hidden, not very hidden, so it can still be unhidden by hand.
+' The other three are made sure to be visible.
+Private Function HideMetadata(ByVal wb As Workbook) As String
+    Dim ws As Worksheet
+    Dim wsMeta As Worksheet
+
+    On Error GoTo Failed
+
+    For Each ws In wb.Worksheets
+        If StrComp(ws.Name, SH_META, vbTextCompare) <> 0 Then
+            If ws.Visible <> xlSheetVisible Then ws.Visible = xlSheetVisible
+        End If
+    Next ws
+
+    Set wsMeta = GetSheet(wb, SH_META)
+    If wsMeta Is Nothing Then Exit Function
+
+    If wsMeta.Visible <> xlSheetHidden Then
+        wsMeta.Visible = xlSheetHidden
+        HideMetadata = "Metadata hidden. "
+    End If
+    Exit Function
+
+Failed:
+    HideMetadata = "PROBLEM: could not set sheet visibility - " & Err.Description & ". "
+End Function

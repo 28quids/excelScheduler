@@ -1083,6 +1083,106 @@ Private Function CheckRename(ByVal folderPath As String, ByVal old As String, _
 End Function
 
 
+' ===========================================================================
+' Button 7 - tidy the sheets
+'
+' Every workbook the same way round: Front Cover, Revision Page, the schedule,
+' then Metadata hidden at the end. A lone schedule sheet still called Sheet1
+' gets a proper name.
+'
+' Only names, order and visibility change. Nothing on any sheet is touched.
+' ===========================================================================
+Public Sub TidySheets()
+    Dim wsSetup As Worksheet
+    Dim folderPath As String, fileName As String
+    Dim wbTgt As Workbook
+    Dim files As Collection, i As Long
+    Dim backupDir As String
+    Dim done As Long, skipped As Long, failed As Long
+    Dim started As Double
+    Dim oneLog As String
+
+    Set wsSetup = GetSheet(ThisWorkbook, SH_SETUP)
+    If wsSetup Is Nothing Then
+        MsgBox "No Setup sheet. Run InstallTool first.", vbExclamation
+        Exit Sub
+    End If
+
+    folderPath = SchedulesFolder()
+    If Len(folderPath) = 0 Then Exit Sub
+
+    Set files = ScheduleFiles(folderPath)
+    If files.Count = 0 Then
+        MsgBox "No Excel files found in:" & vbCrLf & folderPath, vbInformation
+        Exit Sub
+    End If
+
+    If MsgBox("Tidy the sheets in " & files.Count & " workbook(s)?" & vbCrLf & vbCrLf & _
+              "Order becomes Front Cover, Revision Page, Schedule, then Metadata " & _
+              "hidden at the end." & vbCrLf & vbCrLf & _
+              "A workbook with one schedule sheet has it renamed to 'Schedule'. " & _
+              "One with several keeps its names, since they are the only thing " & _
+              "telling those sheets apart." & vbCrLf & vbCrLf & _
+              "Only names, order and visibility change. No cell is touched.", _
+              vbQuestion + vbYesNo, "Tidy sheets") = vbNo Then Exit Sub
+
+    If UCase$(Trim$(CStr(Opt(wsSetup, LBL_BACKUP, R_OPT_BACKUP).Value))) <> "NO" Then
+        backupDir = EndSep(folderPath) & "_backup " & Format$(Now, "yyyy-mm-dd hh-nn")
+        On Error Resume Next
+        MkDir backupDir
+        On Error GoTo 0
+    End If
+
+    On Error GoTo Fail
+    LogStart "Tidy sheets"
+    BeginQuiet xlCalculationManual
+    ProgressStart files.Count, "Tidying sheets"
+    started = Timer
+
+    For i = 1 To files.Count
+        fileName = files(i)
+        ProgressStep i - 1, fileName
+
+        If Len(backupDir) > 0 Then
+            On Error Resume Next
+            FileCopy EndSep(folderPath) & fileName, EndSep(backupDir) & fileName
+            On Error GoTo 0
+        End If
+
+        Set wbTgt = OpenQuiet(EndSep(folderPath) & fileName, False)
+        If wbTgt Is Nothing Then
+            failed = failed + 1
+            LogLine fileName, "FAILED", "Could not open the file."
+        Else
+            oneLog = TidySheetsIn(wbTgt)
+
+            If InStr(1, oneLog, "PROBLEM:", vbTextCompare) > 0 Then
+                wbTgt.Close SaveChanges:=False
+                failed = failed + 1
+                LogLine fileName, "FAILED", oneLog & "Nothing was saved."
+            ElseIf Len(oneLog) = 0 Then
+                wbTgt.Close SaveChanges:=False
+                skipped = skipped + 1
+                LogLine fileName, "Unchanged", "Already tidy."
+            Else
+                wbTgt.Close SaveChanges:=True
+                done = done + 1
+                LogLine fileName, "OK", oneLog
+            End If
+        End If
+    Next i
+
+    ProgressDone
+    EndQuiet
+    ShowSummary "Tidy sheets", done, skipped, failed, Timer - started, _
+                IIf(Len(backupDir) > 0, "Backup: " & backupDir, "")
+    Exit Sub
+
+Fail:
+    Recover "Tidy sheets", wbTgt
+End Sub
+
+
 Public Sub Auto_Open()
     Dim wsSetup As Worksheet
     Set wsSetup = GetSheet(ThisWorkbook, SH_SETUP)
@@ -1799,17 +1899,18 @@ Private Sub BuildSetupSheet(ByVal ws As Worksheet)
 
     ' --- Notes beside the buttons -----------------------------------------
     ' Row 13 down, so the four buttons above never sit on top of them.
-    Note ws.Range("H10"), "Cells shaded yellow are the ones you fill in."
-    Note ws.Range("H11"), "Progress is shown in the status bar, bottom-left of the Excel window."
-    Note ws.Range("H12"), "Every run writes a line per file to the Log sheet, then a summary."
-    Note ws.Range("H14"), "Added a schedule? Press 'Set up / repair schedules' again - it is safe to re-run."
-    Note ws.Range("H15"), "To reissue: on ScheduleList put an x in 'Add?', fill the blue 'New ...' columns,"
-    Note ws.Range("H16"), "then press 'Add revision to ticked'. Blanks fall back to the block above."
-    Note ws.Range("H18"), "Security classification: set the header/footer on one workbook by hand under"
-    Note ws.Range("H19"), "Page Layout, then press 'Copy headers && footers' to push it to the rest."
-    Note ws.Range("H20"), "Changed the cover or revision page layout itself? 'Copy cover && revision page'"
-    Note ws.Range("H21"), "'Rename files' fills the New FileName column first so you can read it, then renames."
-    Note ws.Range("H22"), "Schedule tool version " & TOOL_VERSION
+    Note ws.Range("H12"), "Cells shaded yellow are the ones you fill in."
+    Note ws.Range("H13"), "Progress is shown in the status bar, bottom-left of the Excel window."
+    Note ws.Range("H14"), "Every run writes a line per file to the Log sheet, then a summary."
+    Note ws.Range("H16"), "Added a schedule? Press 'Set up / repair schedules' again - it is safe to re-run."
+    Note ws.Range("H17"), "To reissue: on ScheduleList put an x in 'Add?', fill the blue 'New ...' columns,"
+    Note ws.Range("H18"), "then press 'Add revision to ticked'. Blanks fall back to the block above."
+    Note ws.Range("H20"), "Security classification: set the header/footer on one workbook by hand under"
+    Note ws.Range("H21"), "Page Layout, then press 'Copy headers && footers' to push it to the rest."
+    Note ws.Range("H22"), "Changed the cover or revision page layout itself? 'Copy cover && revision page'"
+    Note ws.Range("H23"), "'Rename files' fills the New FileName column first so you can read it, then renames."
+    Note ws.Range("H24"), "'Tidy sheets' orders every workbook the same way and hides Metadata. No cell is touched."
+    Note ws.Range("H25"), "Schedule tool version " & TOOL_VERSION
 
     ' --- Layout ------------------------------------------------------------
     ws.Columns("A").ColumnWidth = 24
@@ -2062,6 +2163,7 @@ Private Sub BuildButtons(ByVal ws As Worksheet)
     AddButton ws, leftCol, topRow, "SetupProject", "Set up / repair schedules"
     AddButton ws, leftCol, topRow + 36, "RefreshScheduleList", "Refresh schedule list"
     AddButton ws, leftCol, topRow + 72, "AddRevisionToTicked", "Add revision to ticked"
+    AddButton ws, leftCol, topRow + 108, "TidySheets", "Tidy sheets"
 
     AddButton ws, leftCol + 210, topRow, "CopyHeadersFooters", "Copy headers && footers"
     AddButton ws, leftCol + 210, topRow + 36, "CopyCommonSheets", "Copy cover && revision page"

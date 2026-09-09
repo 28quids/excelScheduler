@@ -68,7 +68,7 @@ touches that sheet, so keep it in step by hand.
 
 That's it. Nothing else is typed twice.
 
-## The six buttons
+## The seven buttons
 
 **Set up / repair schedules** — opens every workbook in the folder, points its
 Metadata at this MPI, rebuilds the local references, clears leftover links from
@@ -208,6 +208,25 @@ a QA workflow.
 The reference schedule is remembered in `Setup!B11`, the logo in `Setup!B12`
 and its scale in `Setup!B13`, so re-running after a tweak is one click. The
 same `B11` reference is used by **Copy cover & revision page**.
+
+## Tidying the sheets
+
+**Tidy sheets** puts every workbook in the folder the same way round:
+
+```
+Front Cover | Revision Page | Schedule | (Metadata, hidden)
+```
+
+A workbook with **one** schedule sheet has it renamed to `Schedule`, which
+catches the `Sheet1` that most of them arrive with. One with **several** keeps
+its names, because they cannot all be called `Schedule` and those names are the
+only thing telling the sheets apart. Either way the log names what changed.
+
+Metadata is set to hidden, not very hidden, so it can still be unhidden by hand
+when you want to look at it. The other sheets are made sure to be visible.
+
+**Only names, order and visibility change. No cell on any sheet is touched.** A
+workbook that is already tidy is closed without saving and logged as unchanged.
 
 ## Renaming files
 
