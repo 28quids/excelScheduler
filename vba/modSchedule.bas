@@ -191,6 +191,9 @@ Public Function RepairWorkbook(ByVal wbTgt As Workbook, _
     ' --- Schedule sheet title -------------------------------------------
     log = log & LinkScheduleSheetTitle(wbTgt, wsMeta, wsRev)
 
+    ' --- Title block printed at the top of a schedule sheet ---------------
+    log = log & LinkTitleBlock(wbTgt, wsMeta)
+
     ' --- Revision Page title block, driven by the revision table ---------
     log = log & WriteRevisionFormulas(wsRev)
 
@@ -239,8 +242,17 @@ Private Function WriteMetadata(ByVal wsMeta As Worksheet, ByVal wsRev As Workshe
     wsMeta.Range("B1").Value = "Value"
 
     wsMeta.Range("A2").Value = "DocumentNumber"
+    ' The file name is the document number. Two conventions are in use:
+    '   "<doc no> - Schedule Name.xlsx"   the tail is dropped
+    '   "<doc no>.xlsx"                   the whole name is the number
+    ' Splitting on the last hyphen, as this used to, ate the last segment of
+    ' names that carry no schedule name after a " - ".
     PutFormula wsMeta.Range("B2"), _
-        "=TRIM(TEXTBEFORE(TEXTBEFORE(TEXTAFTER(CELL(""filename"",A1),""[""),""]""),""-"",-1))"
+        "=IFERROR(LET(" & _
+        "raw,TEXTBEFORE(TEXTAFTER(CELL(""filename"",A1),""[""),""]"")," & _
+        "base,TEXTBEFORE(raw,""."",-1)," & _
+        "IF(ISNUMBER(SEARCH("" - "",base)),TRIM(TEXTBEFORE(base,"" - "")),TRIM(base))" & _
+        "),"""")"
 
     wsMeta.Range("A3").Value = "ScheduleName"
     PutFormula wsMeta.Range("B3"), "=TRIM(" & rv & "$A$4)"
@@ -402,6 +414,123 @@ Private Function LinkScheduleSheetTitle(ByVal wb As Workbook, ByVal wsMeta As Wo
             End If
         End If
     Next ws
+End Function
+
+
+' Wires the title block some schedules print across the top of the sheet
+' itself, the one that repeats on every page through Print Titles.
+'
+' Those cells hold the label and the value together in one merged cell:
+'
+'     "CLIENT: Laing O'Rourke"
+'
+' so they become a concatenation of the label and the Metadata value. The cell
+' reads exactly as before and keeps its formatting; it just stops being typed.
+'
+' Label spelling varies across files - CLIENT / CLIENTS, DOCUMENT REFERENCE /
+' DOCUMENTS REFERENCE, one "CHECKED BY:l" - so the text before the colon is
+' matched loosely and rewritten to one spelling. Every change is logged.
+Private Function LinkTitleBlock(ByVal wb As Workbook, ByVal wsMeta As Worksheet) As String
+    Dim ws As Worksheet
+    Dim cell As Range
+    Dim r As Long, c As Long
+    Dim v As Variant
+    Dim canonical As String
+    Dim metaRow As Long
+    Dim asDate As Boolean
+    Dim wired As Long
+    Dim renamed As String
+
+    For Each ws In wb.Worksheets
+        If Not IsCommonSheet(ws) Then
+            For r = 1 To TITLE_BLOCK_ROWS
+                For c = 1 To TITLE_BLOCK_COLS
+                    Set cell = ws.Cells(r, c)
+
+                    ' Only the anchor of a merged block can be written to.
+                    If cell.Address = cell.MergeArea.Cells(1, 1).Address Then
+                        v = cell.Value
+                        If VarType(v) = vbString Then
+                            If InStr(v, ":") > 0 Then
+                                metaRow = 0
+                                asDate = False
+                                canonical = TitleBlockField(LabelKey(CStr(v)), metaRow, asDate)
+
+                                If Len(canonical) > 0 And metaRow > 0 Then
+                                    If Not cell.HasFormula Then
+                                        If StrComp(LabelKey(CStr(v)), canonical, vbTextCompare) <> 0 Then
+                                            renamed = renamed & "'" & Trim$(Left$(CStr(v), _
+                                                      InStr(v, ":"))) & "' to '" & canonical & ":'; "
+                                        End If
+                                        PutFormula cell, TitleBlockFormula(wsMeta, canonical, metaRow, asDate)
+                                        wired = wired + 1
+                                    End If
+                                End If
+                            End If
+                        End If
+                    End If
+                Next c
+            Next r
+        End If
+    Next ws
+
+    If wired > 0 Then LinkTitleBlock = "Linked " & wired & " title block cell(s). "
+    If Len(renamed) > 0 Then LinkTitleBlock = LinkTitleBlock & "Label spelling standardised: " & renamed
+End Function
+
+
+Private Function TitleBlockFormula(ByVal wsMeta As Worksheet, ByVal canonical As String, _
+                                   ByVal metaRow As Long, ByVal asDate As Boolean) As String
+    Dim valueRef As String
+    valueRef = SheetRef(wsMeta.Name) & "!B" & metaRow
+    If asDate Then valueRef = "TEXT(" & valueRef & ",""dd/mm/yyyy"")"
+    TitleBlockFormula = "=""" & canonical & ": ""&" & valueRef
+End Function
+
+
+' "CLIENT: Laing O'Rourke" -> "CLIENT". Everything from the colon on is the
+' value, whatever it happens to be.
+Private Function LabelKey(ByVal cellText As String) As String
+    Dim s As String
+    Dim p As Long
+
+    s = Trim$(cellText)
+    p = InStr(s, ":")
+    If p > 0 Then s = Left$(s, p - 1)
+    s = UCase$(Trim$(s))
+    Do While InStr(s, "  ") > 0
+        s = Replace(s, "  ", " ")
+    Loop
+    LabelKey = s
+End Function
+
+
+' The one spelling of each title block label, and the Metadata row behind it.
+' Add a spelling to a Case to have it recognised and corrected.
+Private Function TitleBlockField(ByVal key As String, ByRef metaRow As Long, _
+                                 ByRef asDate As Boolean) As String
+    Select Case key
+        Case "CLIENT", "CLIENTS"
+            metaRow = 6: TitleBlockField = "CLIENT"
+        Case "PROJECT", "PROJECT NAME"
+            metaRow = 4: TitleBlockField = "PROJECT"
+        Case "PROJECT NUMBER", "PROJECT NO", "PROJECT NO.", "PROJECT NUM"
+            metaRow = 5: TitleBlockField = "PROJECT NUMBER"
+        Case "PREPARED BY"
+            metaRow = 10: TitleBlockField = "PREPARED BY"
+        Case "CHECKED BY"
+            metaRow = 11: TitleBlockField = "CHECKED BY"
+        Case "APPROVED BY"
+            metaRow = 12: TitleBlockField = "APPROVED BY"
+        Case "REVISION"
+            metaRow = 8: TitleBlockField = "REVISION"
+        Case "REVISION DATE", "DATE"
+            metaRow = 9: TitleBlockField = "REVISION DATE": asDate = True
+        Case "PURPOSE OF DOCUMENT", "SUITABILITY", "STATUS"
+            metaRow = 13: TitleBlockField = "PURPOSE OF DOCUMENT"
+        Case "DOCUMENT REFERENCE", "DOCUMENTS REFERENCE", "DOC REF", "DOCUMENT NO", "DOCUMENT NUMBER"
+            metaRow = 2: TitleBlockField = "DOCUMENTS REFERENCE"
+    End Select
 End Function
 
 

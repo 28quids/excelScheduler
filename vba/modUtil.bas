@@ -20,6 +20,10 @@ Public Const TOOL_VERSION As String = "1.0"
 Public Const TITLE_MAX_ROW As Long = 60
 Public Const TITLE_MAX_COL As Long = 10
 
+' How far into a schedule sheet to look for a printed title block.
+Public Const TITLE_BLOCK_ROWS As Long = 8
+Public Const TITLE_BLOCK_COLS As Long = 45
+
 ' Cached file system object (built into Windows, nothing to install).
 Private mFso As Object
 

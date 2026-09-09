@@ -325,6 +325,48 @@ what the dropdown offers from here on.
 `A1`/`A2` and `B1`/`B2` share a description on purpose. The number is the
 issue count, not a different status. Add `A3`, `B3` and so on as needed.
 
+## Schedules that print their own title block
+
+Some schedules carry the title block across the top of the schedule sheet
+itself, in merged cells, repeating on every printed page through Print Titles.
+That is handy for sending one page as a screenshot, and the repair keeps it
+live.
+
+Those cells hold the label and the value **in one cell**:
+
+```
+"CLIENT: Laing O'Rourke"
+```
+
+so the repair turns each into a concatenation:
+
+```excel
+="CLIENT: "&Metadata!B6
+="REVISION DATE: "&TEXT(Metadata!B9,"dd/mm/yyyy")
+```
+
+It reads exactly as before and keeps its formatting; it just stops being typed.
+Cells are found by the label text, not by address, so the merge widths can
+differ from file to file, which in practice they do.
+
+Recognised labels, and what each reads:
+
+| Label | From |
+|---|---|
+| `DOCUMENTS REFERENCE` | the file name |
+| `CLIENT`, `PROJECT`, `PROJECT NUMBER` | the MPI |
+| `REVISION`, `REVISION DATE`, `PURPOSE OF DOCUMENT` | the revision table |
+| `PREPARED BY`, `CHECKED BY`, `APPROVED BY` | the revision table |
+
+Spelling variants are matched and **corrected to one spelling**, with every
+change named on the Log sheet: `CLIENTS:` becomes `CLIENT:`,
+`DOCUMENT REFERENCE:` becomes `DOCUMENTS REFERENCE:`, and a stray character
+after the colon is dropped. Add a spelling to the `Select Case` in
+`TitleBlockField` to have it recognised.
+
+A cell that already holds a formula is left alone, so the repair is safe to
+re-run and will not fight an edit made on purpose.
+
 ## What a schedule must contain
 
 The tool finds cells by their labels, never by fixed addresses, and skips (and
@@ -367,7 +409,7 @@ deletes it from every schedule too.
 
 | Row | Header | Source |
 |---|---|---|
-| 2 | DocumentNumber | the file name, up to the last `-` |
+| 2 | DocumentNumber | the file name: up to ` - ` when there is one, otherwise the whole name |
 | 3 | ScheduleName | `Revision Page!A4` |
 | 4 | Project Name | **MPI** |
 | 5 | Project Number | **MPI** |
