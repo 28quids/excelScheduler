@@ -43,8 +43,22 @@ adds `modMain1` alongside `modMain`, and which copy runs is anyone's guess.
 Import **all three** every time. They change together, and a mismatched set
 fails in confusing ways rather than obviously.
 
-The install box and cell `H24` on the Setup sheet both show the tool version.
+The install box and cell `H22` on the Setup sheet both show the tool version.
 If that number is not what you expect, the import did not take.
+
+### Changing the version number
+
+One place, the declarations at the top of `vba/modUtil.bas`:
+
+```vba
+Public Const TOOL_VERSION As String = "1.3"
+```
+
+That single constant feeds both the "Ready. Schedule tool version ..." box and
+the note on the Setup sheet. Change it, re-import `modUtil`, run `InstallTool`.
+
+The **Version** table on your own README sheet is separate; the tool never
+touches that sheet, so keep it in step by hand.
 
 ## Per project
 

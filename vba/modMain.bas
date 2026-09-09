@@ -65,12 +65,20 @@ Private mLogRow As Long
 ' ===========================================================================
 Public Sub InstallTool()
     Dim wsSetup As Worksheet
+    Dim wsList As Worksheet
     Dim hadCodes As Long
 
     Set wsSetup = EnsureSheet(SH_SETUP)
+    Set wsList = EnsureSheet(SH_LIST)
     hadCodes = SuitabilityCount(wsSetup)
     BuildSetupSheet wsSetup
-    BuildListHeaders EnsureSheet(SH_LIST)
+
+    ' The columns have moved as inputs were added, so anything sitting on the
+    ' list belongs to the old layout and is now under the wrong heading.
+    ' Emptying it costs nothing: the next refresh rebuilds it from the files.
+    BuildListHeaders wsList
+    wsList.Range(wsList.Cells(2, 1), wsList.Cells(wsList.Rows.Count, C_FILECHK)).Clear
+    SetColumnState wsList
     EnsureSheet(SH_LOG).Cells.Clear
     BuildButtons wsSetup
 
@@ -1853,11 +1861,15 @@ Private Sub BuildListHeaders(ByVal ws As Worksheet)
         ws.Cells(1, i + 1).Value = h(i)
     Next i
 
+    ' Own the header row completely. It inherited white text from the table
+    ' style this sheet used to be, which was unreadable on a light fill.
+    ws.Rows(1).ClearFormats
     ws.Rows(1).Font.Bold = True
+    ws.Rows(1).Font.Color = RGB(0, 0, 0)
     ws.Range(ws.Cells(1, 1), ws.Cells(1, C_CHECKS)).Interior.Color = RGB(230, 230, 230)
     ws.Range(ws.Cells(1, C_NEW_FIRST), ws.Cells(1, C_NEWNAME)).Interior.Color = RGB(214, 232, 255)
-    ws.Columns(C_STAMP).Hidden = True
-    ws.Columns(C_FILECHK).Hidden = True
+
+    SetColumnState ws
 
     HeaderNote ws.Cells(1, C_PICK), _
         "Put an x here on every schedule you are reissuing, then press " & _
@@ -1884,20 +1896,40 @@ Private Sub BuildListHeaders(ByVal ws As Worksheet)
 End Sub
 
 
+' Hidden-ness and number formats for the whole sheet, in one place.
+'
+' The columns have moved as inputs were added, and a column that was hidden
+' under an old layout stayed hidden under the new one, with its old number
+' format still on it. That is how the New FileName column arrived invisible
+' and formatted as a date. Every column is now explicitly set, every time.
+Private Sub SetColumnState(ByVal ws As Worksheet)
+    Dim c As Long
+
+    For c = 1 To C_FILECHK
+        ws.Columns(c).Hidden = False
+    Next c
+
+    ws.Columns(C_STAMP).Hidden = True
+    ws.Columns(C_FILECHK).Hidden = True
+
+    ws.Columns(9).NumberFormat = "dd/mm/yyyy"                 ' Date
+    ws.Columns(C_NEW_FIRST + 2).NumberFormat = "dd/mm/yyyy"   ' New Date
+    ws.Columns(C_NEWNAME).NumberFormat = "@"                  ' file names are text
+    ws.Columns(C_STAMP).NumberFormat = "dd/mm/yyyy hh:mm"
+End Sub
+
+
 Private Sub FormatList(ByVal ws As Worksheet, ByVal lastRow As Long)
     Dim wsSetup As Worksheet
     Dim codes As Long
     Dim rng As Range
 
-    ws.Columns(9).NumberFormat = "dd/mm/yyyy"
-    ws.Columns(C_NEW_FIRST + 2).NumberFormat = "dd/mm/yyyy"
-    ' Clearing the rows resets these to General every refresh, so set it here.
-    ws.Columns(C_STAMP).NumberFormat = "dd/mm/yyyy hh:mm"
+    ' Clearing the rows resets number formats to General every refresh.
+    SetColumnState ws
 
-    ws.Range(ws.Cells(1, 1), ws.Cells(1, C_CHECKS)).EntireColumn.AutoFit
+    ws.Range(ws.Cells(1, 1), ws.Cells(1, C_NEWNAME)).EntireColumn.AutoFit
     If ws.Columns(C_CHECKS).ColumnWidth > 60 Then ws.Columns(C_CHECKS).ColumnWidth = 60
-    ws.Columns(C_STAMP).Hidden = True
-    ws.Columns(C_FILECHK).Hidden = True
+    If ws.Columns(C_NEWNAME).ColumnWidth > 60 Then ws.Columns(C_NEWNAME).ColumnWidth = 60
 
     If lastRow < 2 Then Exit Sub
 
