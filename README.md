@@ -54,7 +54,7 @@ If that number is not what you expect, the import did not take.
 
 That's it. Nothing else is typed twice.
 
-## The four buttons
+## The five buttons
 
 **Set up / repair schedules** — opens every workbook in the folder, points its
 Metadata at this MPI, rebuilds the local references, clears leftover links from
@@ -134,7 +134,7 @@ are reset to the default rather than left to be read wrong.
 | `B8` Backup before changes | `Yes` / `No` |
 | `B9` Refresh list on open | `No` by default. `Yes` reads every schedule at startup |
 | `B10` Full refresh every time | `No` by default, which reopens only files whose modified date changed since the last refresh. `Yes` always reopens everything |
-| `B11` Header/footer source | the workbook to copy headers and footers from. Blank = the button asks, then fills this in |
+| `B11` Reference schedule | the schedule that is set up correctly. Used by both copy buttons. Blank = the button asks, then fills this in |
 | `B12` Header image | logo for the top-right of the header. Blank = the button asks; decline and headers stay text only |
 | `B13` Header image scale % | that logo's size as a percentage of the image's own size. Default `20` |
 | `B14`, `B15` | when setup and the refresh last ran. Written by the tool, read only |
@@ -191,8 +191,42 @@ they can be silently dropped. It has been removed: 24 files is a few seconds
 either way, and a tool that reports work it did not do is worse than useless in
 a QA workflow.
 
-The source workbook is remembered in `Setup!B11`, the logo in `Setup!B12` and
-its scale in `Setup!B13`, so re-running after a tweak is one click.
+The reference schedule is remembered in `Setup!B11`, the logo in `Setup!B12`
+and its scale in `Setup!B13`, so re-running after a tweak is one click. The
+same `B11` reference is used by **Copy cover & revision page**.
+
+## Copying the cover and revision page
+
+**Copy cover & revision page** replaces a schedule's `Front Cover` and
+`Revision Page` with the ones from the reference schedule, sheet and all. Use
+it when the pages themselves change: dropping a security classification on a
+project that does not need one, moving a logo, rewording the cover. Set one
+schedule up by hand, then push those two sheets out.
+
+Each target keeps what belongs to the document rather than the template:
+
+| Kept | Why |
+|---|---|
+| the schedule title (`Revision Page!A4`) | it is that document's name |
+| the **entire revision history** | the table is a record of what was issued |
+| Document type, Delref Classification, BSUID, Trigger Events | typed per document |
+
+Everything else on those two sheets comes from the reference. The revision
+history is written back **by column header**, so it survives the reference
+reordering its columns, and the table is always cleared first, so a schedule
+with no history does not inherit the reference's.
+
+Afterwards the normal repair runs on the file, which is what makes the links
+local: nothing ends up pointing back at the reference workbook. Only
+`Metadata!B4:B6` still reach outside, to the MPI, exactly as everywhere else.
+
+It asks which schedules to hit. If any rows are ticked in `Add?` on
+ScheduleList you get the choice of just those or all of them; otherwise it is
+all of them. The reference itself is always skipped. A file that fails is
+closed **without saving**, so a half-copied schedule never gets written.
+
+This is the most destructive thing the tool does. Leave `Backup before changes`
+on, and the confirmation box says so in as many words when it is off.
 
 ## Suitability codes
 

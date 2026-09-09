@@ -17,6 +17,22 @@ Option Explicit
 ' the ScheduleList reads back, so do not rename them casually.
 Private Const META_LAST_ROW As Long = 14
 
+' Revision Page cells that are typed per document and must not be inherited
+' when the common sheets are copied from a reference schedule.
+Private Const KEEP_LABELS As String = _
+    "Document type,Delref Classification,BSUID,Trigger Events"
+
+
+' A schedule's revision history, lifted out before its sheet is replaced.
+Private Type RevData
+    Valid As Boolean
+    Headers() As String
+    Cells() As Variant
+    RowCount As Long
+    ColCount As Long
+End Type
+
+
 ' One sheet's header and footer, captured from the source workbook.
 Public Type HFSet
     Valid As Boolean
@@ -1097,3 +1113,265 @@ Public Function FirstScheduleSheet(ByVal wb As Workbook) As Worksheet
         End If
     Next ws
 End Function
+
+
+' ===========================================================================
+' Copying the common sheets from a reference schedule
+'
+' Replaces a target's Front Cover and Revision Page wholesale with the
+' reference's, so a layout change made once - dropping a security
+' classification, moving a logo, changing the wording - lands everywhere.
+'
+' What survives the copy, because it belongs to the document rather than the
+' template:
+'
+'   the schedule title            ('Revision Page' A4)
+'   the whole revision history    (the RevisionTable rows)
+'   Document type, Delref Classification, BSUID, Trigger Events
+'
+' Everything else comes from the reference. The links are then rebuilt by the
+' normal repair, so nothing points back at the reference workbook.
+' ===========================================================================
+
+
+' Returns "" when nothing needed saying, or a log fragment. The caller runs
+' the repair afterwards and saves.
+Public Function CopyCommonSheetsTo(ByVal wbSrc As Workbook, ByVal wbTgt As Workbook) As String
+    Dim wsSrcFront As Worksheet, wsSrcRev As Worksheet
+    Dim wsRev As Worksheet, wsFront As Worksheet
+    Dim rd As RevData
+    Dim keeps As Object
+    Dim title As String
+    Dim idxFront As Long, idxRev As Long
+    Dim log As String
+
+    Set wsSrcFront = GetSheet(wbSrc, SH_FRONT)
+    Set wsSrcRev = GetSheet(wbSrc, SH_REV)
+    If wsSrcRev Is Nothing Then
+        CopyCommonSheetsTo = "PROBLEM: the reference has no '" & SH_REV & "' sheet. "
+        Exit Function
+    End If
+
+    Set wsRev = GetSheet(wbTgt, SH_REV)
+    Set wsFront = GetSheet(wbTgt, SH_FRONT)
+    If wsRev Is Nothing Then
+        CopyCommonSheetsTo = "PROBLEM: no '" & SH_REV & "' sheet to take the history from. "
+        Exit Function
+    End If
+
+    ' --- everything that belongs to this document, before anything is deleted
+    title = CapturedTitle(wsRev)
+    rd = CaptureRevisions(wsRev)
+    Set keeps = CaptureKeeps(wsRev)
+
+    If Not rd.Valid Then log = log & "No RevisionTable found to preserve. "
+    If Len(title) = 0 Then log = log & "No schedule title found to preserve. "
+
+    idxRev = wsRev.Index
+    If wsFront Is Nothing Then idxFront = idxRev Else idxFront = wsFront.Index
+
+    ' --- swap the sheets -------------------------------------------------
+    If Not wsFront Is Nothing Then wsFront.Delete
+    wsRev.Delete
+
+    If Not wsSrcFront Is Nothing Then
+        log = log & PlaceCopy(wsSrcFront, wbTgt, SH_FRONT, idxFront)
+    End If
+    log = log & PlaceCopy(wsSrcRev, wbTgt, SH_REV, idxRev)
+
+    Set wsRev = GetSheet(wbTgt, SH_REV)
+    If wsRev Is Nothing Then
+        CopyCommonSheetsTo = log & "PROBLEM: the copied Revision Page did not arrive. "
+        Exit Function
+    End If
+
+    ' --- put the document's own content back ------------------------------
+    NameRevisionTable wsRev
+    If Len(title) > 0 Then SetTitle wsRev, title
+    log = log & RestoreRevisions(wsRev, rd)
+    RestoreKeeps wsRev, keeps
+
+    CopyCommonSheetsTo = log
+End Function
+
+
+' Copies one sheet in, gives it the right name and puts it back where the old
+' one was. Excel names a copy "Revision Page (2)" when the name is taken, so
+' the old sheet has to be gone first, which it is.
+Private Function PlaceCopy(ByVal wsSrc As Worksheet, ByVal wbTgt As Workbook, _
+                           ByVal wantName As String, ByVal wantIndex As Long) As String
+    Dim ws As Worksheet
+
+    On Error GoTo Failed
+    wsSrc.Copy After:=wbTgt.Worksheets(wbTgt.Worksheets.Count)
+    Set ws = wbTgt.Worksheets(wbTgt.Worksheets.Count)
+    ws.Name = wantName
+
+    If wantIndex >= 1 And wantIndex <= wbTgt.Worksheets.Count Then
+        ws.Move Before:=wbTgt.Worksheets(wantIndex)
+    End If
+    Exit Function
+
+Failed:
+    PlaceCopy = "PROBLEM: could not place '" & wantName & "' - " & Err.Description & ". "
+End Function
+
+
+Private Function CapturedTitle(ByVal wsRev As Worksheet) As String
+    Dim t As Range
+    Set t = FindTitleCell(wsRev)
+    If t Is Nothing Then Exit Function
+    CapturedTitle = Trim$(CStr(t.Value))
+End Function
+
+
+Private Sub SetTitle(ByVal wsRev As Worksheet, ByVal title As String)
+    Dim t As Range
+    Set t = FindTitleCell(wsRev)
+    If t Is Nothing Then Exit Sub
+    t.Value = title
+End Sub
+
+
+' The revision history, headers included so it can be written back by name
+' even if the reference has reordered the columns.
+Private Function CaptureRevisions(ByVal wsRev As Worksheet) As RevData
+    Dim rd As RevData
+    Dim lo As ListObject
+    Dim body As Range
+    Dim r As Long, c As Long, used As Long
+
+    On Error Resume Next
+    Set lo = wsRev.ListObjects("RevisionTable")
+    On Error GoTo 0
+    If lo Is Nothing Then
+        CaptureRevisions = rd
+        Exit Function
+    End If
+
+    rd.ColCount = lo.ListColumns.Count
+    ReDim rd.Headers(1 To rd.ColCount)
+    For c = 1 To rd.ColCount
+        rd.Headers(c) = CStr(lo.ListColumns(c).Name)
+    Next c
+
+    Set body = lo.DataBodyRange
+    If Not body Is Nothing Then
+        For r = 1 To body.Rows.Count
+            If Application.WorksheetFunction.CountA(body.Rows(r)) > 0 Then used = r
+        Next r
+    End If
+
+    rd.RowCount = used
+    If used > 0 Then
+        ReDim rd.Cells(1 To used, 1 To rd.ColCount)
+        For r = 1 To used
+            For c = 1 To rd.ColCount
+                rd.Cells(r, c) = body.Cells(r, c).Value
+            Next c
+        Next r
+    End If
+
+    rd.Valid = True
+    CaptureRevisions = rd
+End Function
+
+
+' Writes the captured history into the freshly copied table. The body is
+' always cleared first, so a schedule with no history does not inherit the
+' reference's.
+Private Function RestoreRevisions(ByVal wsRev As Worksheet, ByRef rd As RevData) As String
+    Dim lo As ListObject
+    Dim r As Long, c As Long, tgtCol As Long
+    Dim need As Long
+
+    On Error Resume Next
+    Set lo = wsRev.ListObjects("RevisionTable")
+    On Error GoTo 0
+    If lo Is Nothing Then
+        RestoreRevisions = "PROBLEM: no RevisionTable on the copied Revision Page. "
+        Exit Function
+    End If
+
+    On Error GoTo Failed
+
+    If Not lo.DataBodyRange Is Nothing Then lo.DataBodyRange.ClearContents
+
+    If Not rd.Valid Or rd.RowCount = 0 Then Exit Function
+
+    ' Grow the table if this schedule has more revisions than the reference.
+    need = rd.RowCount
+    Do While lo.ListRows.Count < need
+        lo.ListRows.Add
+    Loop
+
+    For r = 1 To rd.RowCount
+        For c = 1 To rd.ColCount
+            tgtCol = ColumnIndexByName(lo, rd.Headers(c))
+            If tgtCol > 0 Then lo.DataBodyRange.Cells(r, tgtCol).Value = rd.Cells(r, c)
+        Next c
+    Next r
+    Exit Function
+
+Failed:
+    RestoreRevisions = "PROBLEM: revision history not fully restored - " & Err.Description & ". "
+End Function
+
+
+Private Function ColumnIndexByName(ByVal lo As ListObject, ByVal colName As String) As Long
+    Dim i As Long
+    For i = 1 To lo.ListColumns.Count
+        If StrComp(lo.ListColumns(i).Name, colName, vbTextCompare) = 0 Then
+            ColumnIndexByName = i
+            Exit Function
+        End If
+    Next i
+End Function
+
+
+' Typed values next to the labels that are per document, not per template.
+Private Function CaptureKeeps(ByVal wsRev As Worksheet) As Object
+    Dim d As Object
+    Dim names As Variant
+    Dim i As Long
+    Dim lbl As Range
+
+    Set d = CreateObject("Scripting.Dictionary")
+    Set CaptureKeeps = d
+
+    names = Split(KEEP_LABELS, ",")
+    For i = LBound(names) To UBound(names)
+        Set lbl = FindLabel(wsRev, Trim$(CStr(names(i))))
+        If Not lbl Is Nothing Then
+            If Not lbl.Offset(0, 1).HasFormula Then
+                d(Trim$(CStr(names(i)))) = lbl.Offset(0, 1).Value
+            End If
+        End If
+    Next i
+End Function
+
+
+Private Sub RestoreKeeps(ByVal wsRev As Worksheet, ByVal keeps As Object)
+    Dim k As Variant
+    Dim lbl As Range
+
+    If keeps Is Nothing Then Exit Sub
+    For Each k In keeps.Keys
+        Set lbl = FindLabel(wsRev, CStr(k))
+        If Not lbl Is Nothing Then lbl.Offset(0, 1).Value = keeps(k)
+    Next k
+End Sub
+
+
+' A copied table can arrive as "RevisionTable1" if the name was taken. It is
+' not, because the old sheet is deleted first, but make sure of it: every
+' revision formula in the workbook refers to it by name.
+Private Sub NameRevisionTable(ByVal wsRev As Worksheet)
+    Dim lo As ListObject
+    If wsRev.ListObjects.Count = 0 Then Exit Sub
+    Set lo = wsRev.ListObjects(1)
+    If StrComp(lo.Name, "RevisionTable", vbTextCompare) = 0 Then Exit Sub
+    On Error Resume Next
+    lo.Name = "RevisionTable"
+    On Error GoTo 0
+End Sub

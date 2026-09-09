@@ -33,7 +33,7 @@ Private Const LBL_FOLDER  As String = "Schedules folder"
 Private Const LBL_BACKUP  As String = "Backup before changes"
 Private Const LBL_AUTO    As String = "Refresh list on open"
 Private Const LBL_FULL    As String = "Full refresh every time"
-Private Const LBL_HFSRC   As String = "Header/footer source"
+Private Const LBL_HFSRC   As String = "Reference schedule"
 Private Const LBL_HFIMG   As String = "Header image"
 Private Const LBL_HFSCALE As String = "Header image scale %"
 Private Const LBL_SETUP   As String = "Last setup run"
@@ -550,7 +550,7 @@ Private Function HeaderSourcePath(ByVal wsSetup As Worksheet, ByVal folderPath A
         End If
     End If
 
-    candidate = PickWorkbook("Pick the workbook whose headers and footers are correct", folderPath)
+    candidate = PickWorkbook("Pick the schedule that is set up correctly", folderPath)
     If Len(candidate) = 0 Then Exit Function
 
     ' Store just the name when it lives in the schedules folder, so the setting
@@ -633,6 +633,187 @@ End Function
 
 
 
+
+
+' ===========================================================================
+' Button 5 - copy the Front Cover and Revision Page from a reference schedule
+'
+' For a change to the common pages themselves: dropping a security
+' classification, moving a logo, rewording the cover. Set one schedule up by
+' hand, then push those two sheets to the others.
+'
+' Each target keeps its own schedule title, its whole revision history, and
+' its document type, Delref, BSUID and trigger events. The links are rebuilt
+' locally afterwards, so nothing points back at the reference.
+' ===========================================================================
+Public Sub CopyCommonSheets()
+    Dim wsSetup As Worksheet
+    Dim folderPath As String, srcPath As String, fileName As String
+    Dim wbSrc As Workbook, wbTgt As Workbook
+    Dim files As Collection, i As Long
+    Dim backupDir As String
+    Dim done As Long, skipped As Long, failed As Long
+    Dim started As Double
+    Dim oneLog As String
+    Dim projNameRef As String, projNoRef As String, clientRef As String
+    Dim statuses As Variant
+
+    Set wsSetup = GetSheet(ThisWorkbook, SH_SETUP)
+    If wsSetup Is Nothing Then
+        MsgBox "No Setup sheet. Run InstallTool first.", vbExclamation
+        Exit Sub
+    End If
+
+    If Not SetupRefs(wsSetup, projNameRef, projNoRef, clientRef) Then Exit Sub
+
+    folderPath = SchedulesFolder()
+    If Len(folderPath) = 0 Then Exit Sub
+
+    srcPath = HeaderSourcePath(wsSetup, folderPath)
+    If Len(srcPath) = 0 Then Exit Sub
+
+    Set files = ChosenTargets(folderPath, srcPath)
+    If files Is Nothing Then Exit Sub
+    If files.Count = 0 Then
+        MsgBox "Nothing to copy to.", vbInformation
+        Exit Sub
+    End If
+
+    If MsgBox("Replace the Front Cover and Revision Page in " & files.Count & _
+              " schedule(s) with the ones from" & vbCrLf & vbCrLf & _
+              BaseName(srcPath) & vbCrLf & vbCrLf & _
+              "Each schedule keeps its own:" & vbCrLf & _
+              "  - schedule title" & vbCrLf & _
+              "  - full revision history" & vbCrLf & _
+              "  - document type, Delref, BSUID, trigger events" & vbCrLf & vbCrLf & _
+              "Everything else on those two sheets is replaced, and the links " & _
+              "are rebuilt to point at each schedule's own data." & vbCrLf & vbCrLf & _
+              IIf(UCase$(Trim$(CStr(Opt(wsSetup, LBL_BACKUP, R_OPT_BACKUP).Value))) = "NO", _
+                  "Backups are switched OFF on the Setup sheet.", _
+                  "A backup is taken first."), _
+              vbExclamation + vbYesNo + vbDefaultButton2, "Copy cover & revision page") = vbNo Then Exit Sub
+
+    statuses = GatherStatuses(wsSetup)
+
+    If UCase$(Trim$(CStr(Opt(wsSetup, LBL_BACKUP, R_OPT_BACKUP).Value))) <> "NO" Then
+        backupDir = EndSep(folderPath) & "_backup " & Format$(Now, "yyyy-mm-dd hh-nn")
+        On Error Resume Next
+        MkDir backupDir
+        On Error GoTo 0
+    End If
+
+    On Error GoTo Fail
+    LogStart "Copy cover & revision page"
+    BeginQuiet xlCalculationAutomatic
+    ProgressStart files.Count, "Copying cover and revision page"
+    started = Timer
+
+    Set wbSrc = OpenQuiet(srcPath, True)
+    If wbSrc Is Nothing Then
+        EndQuiet
+        MsgBox "Could not open the reference workbook:" & vbCrLf & srcPath, vbExclamation
+        Exit Sub
+    End If
+
+    For i = 1 To files.Count
+        fileName = files(i)
+        ProgressStep i - 1, fileName
+
+        If Len(backupDir) > 0 Then
+            On Error Resume Next
+            FileCopy EndSep(folderPath) & fileName, EndSep(backupDir) & fileName
+            On Error GoTo 0
+        End If
+
+        Set wbTgt = OpenQuiet(EndSep(folderPath) & fileName, False)
+        If wbTgt Is Nothing Then
+            failed = failed + 1
+            LogLine fileName, "FAILED", "Could not open the file."
+        ElseIf Not LooksLikeSchedule(wbTgt) Then
+            wbTgt.Close SaveChanges:=False
+            skipped = skipped + 1
+            LogLine fileName, "Skipped", "No Revision Page - not a schedule."
+        Else
+            oneLog = CopyCommonSheetsTo(wbSrc, wbTgt)
+
+            If InStr(1, oneLog, "PROBLEM:", vbTextCompare) > 0 Then
+                wbTgt.Close SaveChanges:=False
+                failed = failed + 1
+                LogLine fileName, "FAILED", oneLog & "Nothing was saved."
+            Else
+                ' Rebuild every link locally, so none point at the reference.
+                oneLog = oneLog & RepairWorkbook(wbTgt, ThisWorkbook.FullName, SH_SETUP, _
+                                                 projNameRef, projNoRef, clientRef, statuses)
+                wbTgt.Close SaveChanges:=True
+                done = done + 1
+                LogLine fileName, "OK", oneLog
+            End If
+        End If
+    Next i
+
+    wbSrc.Close SaveChanges:=False
+    ProgressDone
+    EndQuiet
+
+    ShowSummary "Copy cover & revision page", done, skipped, failed, Timer - started, _
+                IIf(Len(backupDir) > 0, "Backup: " & backupDir, "")
+    RefreshScheduleList
+    Exit Sub
+
+Fail:
+    On Error Resume Next
+    If Not wbSrc Is Nothing Then wbSrc.Close SaveChanges:=False
+    On Error GoTo 0
+    Recover "Copy cover & revision page", wbTgt
+End Sub
+
+
+' Which schedules to act on: the ones ticked on ScheduleList, or all of them.
+' Returns Nothing if the user backs out.
+Private Function ChosenTargets(ByVal folderPath As String, ByVal srcPath As String) As Collection
+    Dim all As Collection, picked As New Collection
+    Dim wsList As Worksheet
+    Dim r As Long, lastRow As Long, ticked As Long
+    Dim answer As VbMsgBoxResult
+    Dim f As String
+    Dim i As Long
+
+    Set all = ScheduleFiles(folderPath)
+
+    Set wsList = GetSheet(ThisWorkbook, SH_LIST)
+    If Not wsList Is Nothing Then
+        lastRow = wsList.Cells(wsList.Rows.Count, C_FILE).End(xlUp).Row
+        For r = 2 To lastRow
+            If IsTicked(wsList, r) Then ticked = ticked + 1
+        Next r
+    End If
+
+    If ticked > 0 Then
+        answer = MsgBox(ticked & " schedule(s) are ticked on ScheduleList." & vbCrLf & vbCrLf & _
+                        "Yes  - only those " & ticked & vbCrLf & _
+                        "No   - all " & all.Count & " in the folder" & vbCrLf & _
+                        "Cancel - stop", _
+                        vbQuestion + vbYesNoCancel, "Which schedules?")
+        If answer = vbCancel Then Exit Function
+        If answer = vbYes Then
+            For r = 2 To lastRow
+                If IsTicked(wsList, r) Then
+                    f = AsText(wsList.Cells(r, C_FILE).Value)
+                    If Len(f) > 0 And StrComp(EndSep(folderPath) & f, srcPath, vbTextCompare) <> 0 Then
+                        picked.Add f
+                    End If
+                End If
+            Next r
+            Set ChosenTargets = picked
+            Exit Function
+        End If
+    End If
+
+    For i = 1 To all.Count
+        If StrComp(EndSep(folderPath) & all(i), srcPath, vbTextCompare) <> 0 Then picked.Add all(i)
+    Next i
+    Set ChosenTargets = picked
+End Function
 
 
 Public Sub Auto_Open()
@@ -1168,8 +1349,8 @@ Private Sub BuildSetupSheet(ByVal ws As Worksheet)
     ws.Range("A1:F40").ClearFormats
     ws.Range("A5:A40").ClearContents
     ws.Range("C1:C40").ClearContents
-    ws.Range("H1:H26").ClearFormats
-    ws.Range("H1:H26").ClearContents
+    ws.Range("H1:H30").ClearFormats
+    ws.Range("H1:H30").ClearContents
     ws.Range("A1:A" & R_REV_FIRST + 6).Font.Color = CLR_LABEL
 
     ' Row heights back to standard. An earlier version shrank rows 2 and 5 as
@@ -1195,7 +1376,7 @@ Private Sub BuildSetupSheet(ByVal ws As Worksheet)
     ws.Cells(R_OPT_BACKUP, 1).Value = "Backup before changes"
     ws.Cells(R_OPT_AUTO, 1).Value = "Refresh list on open"
     ws.Cells(R_OPT_FULL, 1).Value = "Full refresh every time"
-    ws.Cells(R_OPT_HFSRC, 1).Value = "Header/footer source"
+    ws.Cells(R_OPT_HFSRC, 1).Value = "Reference schedule"
     ws.Cells(R_OPT_HFIMG, 1).Value = "Header image"
     ws.Cells(R_OPT_HFSCALE, 1).Value = "Header image scale %"
     ws.Cells(R_OPT_SETUP, 1).Value = "Last setup run"
@@ -1234,7 +1415,7 @@ Private Sub BuildSetupSheet(ByVal ws As Worksheet)
     Note ws.Cells(R_OPT_BACKUP, 3), "copies every file into a timestamped folder first"
     Note ws.Cells(R_OPT_AUTO, 3), "reads every schedule when this file is opened"
     Note ws.Cells(R_OPT_FULL, 3), "No = only reopen files that changed since last time"
-    Note ws.Cells(R_OPT_HFSRC, 3), "the workbook to copy headers/footers from; blank = ask"
+    Note ws.Cells(R_OPT_HFSRC, 3), "the schedule that is set up correctly; used by both copy buttons"
     Note ws.Cells(R_OPT_HFIMG, 3), "logo for the top-right of the header; blank = ask, or leave for none"
     Note ws.Cells(R_OPT_HFSCALE, 3), "size of that logo as a percentage of the image's own size"
 
@@ -1260,15 +1441,16 @@ Private Sub BuildSetupSheet(ByVal ws As Worksheet)
 
     ' --- Notes beside the buttons -----------------------------------------
     ' Row 13 down, so the four buttons above never sit on top of them.
-    Note ws.Range("H13"), "Cells shaded yellow are the ones you fill in."
-    Note ws.Range("H14"), "Progress is shown in the status bar, bottom-left of the Excel window."
-    Note ws.Range("H15"), "Every run writes a line per file to the Log sheet, then a summary."
-    Note ws.Range("H17"), "Added a schedule? Press 'Set up / repair schedules' again - it is safe to re-run."
-    Note ws.Range("H18"), "To reissue: on ScheduleList put an x in 'Add?', fill the blue 'New ...' columns,"
-    Note ws.Range("H19"), "then press 'Add revision to ticked'. Blanks fall back to the block above."
-    Note ws.Range("H21"), "Security classification: set the header/footer on one workbook by hand under"
-    Note ws.Range("H22"), "Page Layout, then press 'Copy headers && footers' to push it to the rest."
-    Note ws.Range("H24"), "Schedule tool version " & TOOL_VERSION
+    Note ws.Range("H15"), "Cells shaded yellow are the ones you fill in."
+    Note ws.Range("H16"), "Progress is shown in the status bar, bottom-left of the Excel window."
+    Note ws.Range("H17"), "Every run writes a line per file to the Log sheet, then a summary."
+    Note ws.Range("H19"), "Added a schedule? Press 'Set up / repair schedules' again - it is safe to re-run."
+    Note ws.Range("H20"), "To reissue: on ScheduleList put an x in 'Add?', fill the blue 'New ...' columns,"
+    Note ws.Range("H21"), "then press 'Add revision to ticked'. Blanks fall back to the block above."
+    Note ws.Range("H23"), "Security classification: set the header/footer on one workbook by hand under"
+    Note ws.Range("H24"), "Page Layout, then press 'Copy headers && footers' to push it to the rest."
+    Note ws.Range("H25"), "Changed the cover or revision page layout itself? 'Copy cover && revision page'"
+    Note ws.Range("H27"), "Schedule tool version " & TOOL_VERSION
 
     ' --- Layout ------------------------------------------------------------
     ws.Columns("A").ColumnWidth = 24
@@ -1500,6 +1682,10 @@ Private Sub BuildButtons(ByVal ws As Worksheet)
     Set b = ws.Buttons.Add(ws.Range("H2").Left, ws.Range("H2").Top + 108, 200, 30)
     b.OnAction = "CopyHeadersFooters"
     b.Caption = "Copy headers && footers"
+
+    Set b = ws.Buttons.Add(ws.Range("H2").Left, ws.Range("H2").Top + 144, 200, 30)
+    b.OnAction = "CopyCommonSheets"
+    b.Caption = "Copy cover && revision page"
 End Sub
 
 
