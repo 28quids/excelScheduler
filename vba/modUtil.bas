@@ -14,7 +14,7 @@ Public Const SH_LOG   As String = "Log"
 
 ' Shown on the Setup sheet and in the install box, so "which build is loaded"
 ' is answerable at a glance after a re-import.
-Public Const TOOL_VERSION As String = "1.2"
+Public Const TOOL_VERSION As String = "1.3"
 
 ' How far down/across we look for the "SCHEDULE OF ..." title cell.
 Public Const TITLE_MAX_ROW As Long = 60
@@ -352,6 +352,40 @@ Public Function PickWorkbook(ByVal promptText As String, ByVal startFolder As St
         If Len(startFolder) > 0 Then .InitialFileName = EndSep(startFolder)
         If .Show = -1 Then PickWorkbook = .SelectedItems(1)
     End With
+End Function
+
+
+' True if a workbook of that name is already open, in which case it cannot
+' be renamed on disk.
+Public Function IsWorkbookOpen(ByVal fileName As String) As Boolean
+    Dim wb As Workbook
+    For Each wb In Application.Workbooks
+        If StrComp(wb.Name, fileName, vbTextCompare) = 0 Then
+            IsWorkbookOpen = True
+            Exit Function
+        End If
+    Next wb
+End Function
+
+
+' The characters Windows will not accept in a file name.
+Public Function BadNameChars(ByVal fileName As String) As String
+    Dim bad As String
+    Dim i As Long
+    Dim ch As String
+
+    bad = "\/:*?""<>|"
+    For i = 1 To Len(bad)
+        ch = Mid$(bad, i, 1)
+        If InStr(fileName, ch) > 0 Then BadNameChars = BadNameChars & ch
+    Next i
+End Function
+
+
+Public Function FileExtension(ByVal fileName As String) As String
+    Dim p As Long
+    p = InStrRev(fileName, ".")
+    If p > 1 Then FileExtension = Mid$(fileName, p)
 End Function
 
 

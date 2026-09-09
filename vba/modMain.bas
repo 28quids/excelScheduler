@@ -52,8 +52,9 @@ Private Const C_FILE      As Long = 2
 Private Const C_DATA_1    As Long = 3      ' ScheduleName
 Private Const C_CHECKS    As Long = 16
 Private Const C_NEW_FIRST As Long = 17     ' New Rev..New Description = 17..23
-Private Const C_STAMP     As Long = 24     ' hidden, file modified time
-Private Const C_FILECHK   As Long = 25     ' hidden, checks that come from the file itself
+Private Const C_NEWNAME   As Long = 24     ' proposed file name, for the rename
+Private Const C_STAMP     As Long = 25     ' hidden, file modified time
+Private Const C_FILECHK   As Long = 26     ' hidden, checks that come from the file itself
 Private Const REV_FIELDS  As Long = 7      ' Rev, Status, Date, Pr, Ch, Ap, Descr
 
 Private mLogRow As Long
@@ -816,6 +817,258 @@ Private Function ChosenTargets(ByVal folderPath As String, ByVal srcPath As Stri
 End Function
 
 
+' ===========================================================================
+' Button 6 - rename schedule files
+'
+' Two presses. The first fills in the New FileName column by find and replace
+' so you can read what it intends to do; the second does it. Typing a name in
+' that column by hand skips straight to the second.
+'
+' Renaming is safe for the links - schedules link to the MPI, never to each
+' other, and the MPI finds them by scanning the folder. It is NOT cosmetic
+' though: the document number is derived from the file name, so every renamed
+' file is reopened and saved to bake the new number into its title block.
+' ===========================================================================
+Public Sub RenameFiles()
+    Dim wsList As Worksheet
+    Dim folderPath As String
+    Dim proposed As Long
+
+    Set wsList = GetSheet(ThisWorkbook, SH_LIST)
+    If wsList Is Nothing Then
+        MsgBox "No ScheduleList sheet. Run InstallTool first.", vbExclamation
+        Exit Sub
+    End If
+
+    folderPath = SchedulesFolder()
+    If Len(folderPath) = 0 Then Exit Sub
+
+    proposed = CountProposedNames(wsList)
+
+    If proposed = 0 Then
+        ProposeNames wsList, folderPath
+    Else
+        ApplyRenames wsList, folderPath
+    End If
+End Sub
+
+
+Private Function CountProposedNames(ByVal wsList As Worksheet) As Long
+    Dim r As Long, lastRow As Long
+    lastRow = wsList.Cells(wsList.Rows.Count, C_FILE).End(xlUp).Row
+    For r = 2 To lastRow
+        If Len(AsText(wsList.Cells(r, C_NEWNAME).Value)) > 0 Then _
+            CountProposedNames = CountProposedNames + 1
+    Next r
+End Function
+
+
+' First press: work out the new names and show them, change nothing.
+Private Sub ProposeNames(ByVal wsList As Worksheet, ByVal folderPath As String)
+    Dim findText As Variant, replaceText As Variant
+    Dim r As Long, lastRow As Long, n As Long
+    Dim old As String, proposed As String
+    Dim onlyTicked As Boolean
+
+    findText = Application.InputBox( _
+        "Text to find in the file names." & vbCrLf & vbCrLf & _
+        "For example PROJECTNUMBER, to swap the placeholder for the real one.", _
+        "Rename files", Type:=2)
+    If VarType(findText) = vbBoolean Then Exit Sub
+    If Len(CStr(findText)) = 0 Then
+        MsgBox "Nothing to find.", vbExclamation
+        Exit Sub
+    End If
+
+    replaceText = Application.InputBox( _
+        "Replace """ & findText & """ with what?" & vbCrLf & vbCrLf & _
+        "Leave it empty to delete that text from the names.", _
+        "Rename files", Type:=2)
+    If VarType(replaceText) = vbBoolean Then Exit Sub
+
+    onlyTicked = (TickedCount(wsList) > 0)
+    If onlyTicked Then
+        If MsgBox(TickedCount(wsList) & " schedule(s) are ticked." & vbCrLf & vbCrLf & _
+                  "Yes - only those." & vbCrLf & "No  - every schedule on the list.", _
+                  vbQuestion + vbYesNo, "Which schedules?") = vbNo Then onlyTicked = False
+    End If
+
+    lastRow = wsList.Cells(wsList.Rows.Count, C_FILE).End(xlUp).Row
+    For r = 2 To lastRow
+        If (Not onlyTicked) Or IsTicked(wsList, r) Then
+            old = AsText(wsList.Cells(r, C_FILE).Value)
+            If Len(old) > 0 Then
+                proposed = Replace(old, CStr(findText), CStr(replaceText), 1, -1, vbTextCompare)
+                If StrComp(proposed, old, vbBinaryCompare) <> 0 Then
+                    wsList.Cells(r, C_NEWNAME).Value = proposed
+                    n = n + 1
+                End If
+            End If
+        End If
+    Next r
+
+    wsList.Columns(C_NEWNAME).AutoFit
+    wsList.Activate
+
+    If n = 0 Then
+        MsgBox """" & findText & """ is not in any of those file names. Nothing to do.", _
+               vbInformation, "Rename files"
+    Else
+        MsgBox n & " file name(s) proposed in the 'New FileName' column." & vbCrLf & vbCrLf & _
+               "Read them, edit any you want to change, clear any you do not want, " & _
+               "then press 'Rename files' again to do it.", _
+               vbInformation, "Rename files - review"
+    End If
+End Sub
+
+
+Private Function TickedCount(ByVal wsList As Worksheet) As Long
+    Dim r As Long, lastRow As Long
+    lastRow = wsList.Cells(wsList.Rows.Count, C_FILE).End(xlUp).Row
+    For r = 2 To lastRow
+        If IsTicked(wsList, r) Then TickedCount = TickedCount + 1
+    Next r
+End Function
+
+
+' Second press: check the whole batch, then do it.
+'
+' Every problem is found before anything is renamed. A half-renamed folder is
+' far harder to unpick than a refusal.
+Private Sub ApplyRenames(ByVal wsList As Worksheet, ByVal folderPath As String)
+    Dim r As Long, lastRow As Long
+    Dim old As String, proposed As String
+    Dim rowIdx() As Long, olds() As String, news() As String
+    Dim n As Long, i As Long, j As Long
+    Dim problems As String
+    Dim done As Long, failed As Long
+    Dim started As Double
+    Dim wb As Workbook
+
+    lastRow = wsList.Cells(wsList.Rows.Count, C_FILE).End(xlUp).Row
+    ReDim rowIdx(1 To lastRow)
+    ReDim olds(1 To lastRow)
+    ReDim news(1 To lastRow)
+
+    For r = 2 To lastRow
+        proposed = Trim$(AsText(wsList.Cells(r, C_NEWNAME).Value))
+        If Len(proposed) > 0 Then
+            old = AsText(wsList.Cells(r, C_FILE).Value)
+
+            ' No extension typed means keep the one it has.
+            If Len(FileExtension(proposed)) = 0 Then proposed = proposed & FileExtension(old)
+
+            n = n + 1
+            rowIdx(n) = r
+            olds(n) = old
+            news(n) = proposed
+
+            problems = problems & CheckRename(folderPath, old, proposed)
+        End If
+    Next r
+
+    If n = 0 Then Exit Sub
+
+    ' Two rows renaming to the same thing would destroy one of them.
+    For i = 1 To n
+        For j = i + 1 To n
+            If StrComp(news(i), news(j), vbTextCompare) = 0 Then
+                problems = problems & "Two schedules would both become '" & news(i) & "'. "
+            End If
+        Next j
+    Next i
+
+    If Len(problems) > 0 Then
+        MsgBox "Nothing was renamed." & vbCrLf & vbCrLf & problems & vbCrLf & vbCrLf & _
+               "Fix the 'New FileName' column and try again.", vbExclamation, "Rename files"
+        Exit Sub
+    End If
+
+    If MsgBox("Rename " & n & " file(s)?" & vbCrLf & vbCrLf & _
+              olds(1) & vbCrLf & "    becomes" & vbCrLf & news(1) & _
+              IIf(n > 1, vbCrLf & vbCrLf & "...and " & (n - 1) & " more.", "") & vbCrLf & vbCrLf & _
+              "Each one is then reopened and saved, because the document number " & _
+              "on the title block is taken from the file name.", _
+              vbQuestion + vbYesNo, "Rename files") = vbNo Then Exit Sub
+
+    On Error GoTo Fail
+    LogStart "Rename files"
+    BeginQuiet xlCalculationAutomatic
+    ProgressStart n, "Renaming"
+    started = Timer
+
+    For i = 1 To n
+        ProgressStep i - 1, olds(i)
+
+        On Error Resume Next
+        Err.Clear
+        Name EndSep(folderPath) & olds(i) As EndSep(folderPath) & news(i)
+        On Error GoTo Fail
+
+        If Err.Number <> 0 Then
+            failed = failed + 1
+            LogLine olds(i), "FAILED", "Rename failed - " & Err.Description
+            Err.Clear
+        Else
+            ' Recalculate so the document number in the file matches its new
+            ' name, otherwise the title block keeps the old one until someone
+            ' happens to open it.
+            Set wb = OpenQuiet(EndSep(folderPath) & news(i), False)
+            If wb Is Nothing Then
+                LogLine olds(i), "OK", "Renamed to " & news(i) & _
+                        " but could not reopen it to refresh the document number."
+            Else
+                Application.CalculateFull
+                wb.Close SaveChanges:=True
+                LogLine olds(i), "OK", "Renamed to " & news(i)
+            End If
+            done = done + 1
+            wsList.Cells(rowIdx(i), C_FILE).Value = news(i)
+            wsList.Cells(rowIdx(i), C_NEWNAME).ClearContents
+        End If
+    Next i
+
+    ProgressDone
+    EndQuiet
+    ShowSummary "Rename files", done, 0, failed, Timer - started, ""
+    RefreshScheduleList
+    Exit Sub
+
+Fail:
+    Recover "Rename files", wb
+End Sub
+
+
+' Everything that would make one rename go wrong.
+Private Function CheckRename(ByVal folderPath As String, ByVal old As String, _
+                             ByVal proposed As String) As String
+    Dim bad As String
+
+    If Len(old) = 0 Then
+        CheckRename = "A row has a new name but no current file name. "
+        Exit Function
+    End If
+
+    If StrComp(old, proposed, vbBinaryCompare) = 0 Then Exit Function
+
+    bad = BadNameChars(proposed)
+    If Len(bad) > 0 Then _
+        CheckRename = CheckRename & "'" & proposed & "' contains " & bad & ". "
+
+    If LCase$(FileExtension(proposed)) <> LCase$(FileExtension(old)) Then _
+        CheckRename = CheckRename & "'" & proposed & "' changes the file type. "
+
+    If Not FileExists(EndSep(folderPath) & old) Then _
+        CheckRename = CheckRename & "'" & old & "' is not in the folder. "
+
+    If FileExists(EndSep(folderPath) & proposed) Then _
+        CheckRename = CheckRename & "'" & proposed & "' already exists. "
+
+    If IsWorkbookOpen(old) Then _
+        CheckRename = CheckRename & "'" & old & "' is open - close it first. "
+End Function
+
+
 Public Sub Auto_Open()
     Dim wsSetup As Worksheet
     Set wsSetup = GetSheet(ThisWorkbook, SH_SETUP)
@@ -1057,7 +1310,7 @@ Private Sub RestoreTypedEntries(ByVal wsList As Worksheet, ByVal keep As Object,
             vals = keep(f)
             If Len(AsText(wsList.Cells(r, C_PICK).Value)) = 0 Then _
                 wsList.Cells(r, C_PICK).Value = vals(C_PICK)
-            For c = C_NEW_FIRST To C_NEW_FIRST + REV_FIELDS - 1
+            For c = C_NEW_FIRST To C_NEWNAME
                 If Len(AsText(wsList.Cells(r, c).Value)) = 0 Then wsList.Cells(r, c).Value = vals(c)
             Next c
         End If
@@ -1441,16 +1694,17 @@ Private Sub BuildSetupSheet(ByVal ws As Worksheet)
 
     ' --- Notes beside the buttons -----------------------------------------
     ' Row 13 down, so the four buttons above never sit on top of them.
-    Note ws.Range("H15"), "Cells shaded yellow are the ones you fill in."
-    Note ws.Range("H16"), "Progress is shown in the status bar, bottom-left of the Excel window."
-    Note ws.Range("H17"), "Every run writes a line per file to the Log sheet, then a summary."
-    Note ws.Range("H19"), "Added a schedule? Press 'Set up / repair schedules' again - it is safe to re-run."
-    Note ws.Range("H20"), "To reissue: on ScheduleList put an x in 'Add?', fill the blue 'New ...' columns,"
-    Note ws.Range("H21"), "then press 'Add revision to ticked'. Blanks fall back to the block above."
-    Note ws.Range("H23"), "Security classification: set the header/footer on one workbook by hand under"
-    Note ws.Range("H24"), "Page Layout, then press 'Copy headers && footers' to push it to the rest."
-    Note ws.Range("H25"), "Changed the cover or revision page layout itself? 'Copy cover && revision page'"
-    Note ws.Range("H27"), "Schedule tool version " & TOOL_VERSION
+    Note ws.Range("H10"), "Cells shaded yellow are the ones you fill in."
+    Note ws.Range("H11"), "Progress is shown in the status bar, bottom-left of the Excel window."
+    Note ws.Range("H12"), "Every run writes a line per file to the Log sheet, then a summary."
+    Note ws.Range("H14"), "Added a schedule? Press 'Set up / repair schedules' again - it is safe to re-run."
+    Note ws.Range("H15"), "To reissue: on ScheduleList put an x in 'Add?', fill the blue 'New ...' columns,"
+    Note ws.Range("H16"), "then press 'Add revision to ticked'. Blanks fall back to the block above."
+    Note ws.Range("H18"), "Security classification: set the header/footer on one workbook by hand under"
+    Note ws.Range("H19"), "Page Layout, then press 'Copy headers && footers' to push it to the rest."
+    Note ws.Range("H20"), "Changed the cover or revision page layout itself? 'Copy cover && revision page'"
+    Note ws.Range("H21"), "'Rename files' fills the New FileName column first so you can read it, then renames."
+    Note ws.Range("H22"), "Schedule tool version " & TOOL_VERSION
 
     ' --- Layout ------------------------------------------------------------
     ws.Columns("A").ColumnWidth = 24
@@ -1593,7 +1847,7 @@ Private Sub BuildListHeaders(ByVal ws As Worksheet)
               "Client", "DocType", "Revision", "Date", "PrBy", "ChBy", "ApBy", _
               "DocumentNo", "SuitabilitySt", "SuitabilityDs", "Checks", _
               "New Rev", "New Status", "New Date", "New PrBy", "New ChBy", _
-              "New ApBy", "New Description", "_Stamp", "_FileChecks")
+              "New ApBy", "New Description", "New FileName", "_Stamp", "_FileChecks")
 
     For i = 0 To UBound(h)
         ws.Cells(1, i + 1).Value = h(i)
@@ -1601,8 +1855,7 @@ Private Sub BuildListHeaders(ByVal ws As Worksheet)
 
     ws.Rows(1).Font.Bold = True
     ws.Range(ws.Cells(1, 1), ws.Cells(1, C_CHECKS)).Interior.Color = RGB(230, 230, 230)
-    ws.Range(ws.Cells(1, C_NEW_FIRST), ws.Cells(1, C_NEW_FIRST + REV_FIELDS - 1)). _
-        Interior.Color = RGB(214, 232, 255)
+    ws.Range(ws.Cells(1, C_NEW_FIRST), ws.Cells(1, C_NEWNAME)).Interior.Color = RGB(214, 232, 255)
     ws.Columns(C_STAMP).Hidden = True
     ws.Columns(C_FILECHK).Hidden = True
 
@@ -1612,6 +1865,12 @@ Private Sub BuildListHeaders(ByVal ws As Worksheet)
         "The revision itself comes from the blue 'New ...' columns on the same row. " & _
         "Anything you leave blank there is taken from the 'New revision' block on " & _
         "the Setup sheet, so common values only get typed once."
+    HeaderNote ws.Cells(1, C_NEWNAME), _
+        "The file name to rename this schedule to." & vbCrLf & vbCrLf & _
+        "Press 'Rename files' once to fill this column in by find and replace, " & _
+        "check what it proposes, then press it again to do the renaming. Or just " & _
+        "type a name here yourself." & vbCrLf & vbCrLf & _
+        "Leave the extension off and the current one is kept."
     HeaderNote ws.Cells(1, C_NEW_FIRST), _
         "The revision line to add to this schedule." & vbCrLf & vbCrLf & _
         "Fill in as much or as little as you like: blank cells fall back to the " & _
@@ -1660,32 +1919,33 @@ End Sub
 
 
 Private Sub BuildButtons(ByVal ws As Worksheet)
-    Dim b As Object
     Dim i As Long
+    Dim leftCol As Double, topRow As Double
 
     For i = ws.Buttons.Count To 1 Step -1
         ws.Buttons(i).Delete
     Next i
 
-    Set b = ws.Buttons.Add(ws.Range("H2").Left, ws.Range("H2").Top, 200, 30)
-    b.OnAction = "SetupProject"
-    b.Caption = "Set up / repair schedules"
+    leftCol = ws.Range("H2").Left
+    topRow = ws.Range("H2").Top
 
-    Set b = ws.Buttons.Add(ws.Range("H2").Left, ws.Range("H2").Top + 36, 200, 30)
-    b.OnAction = "RefreshScheduleList"
-    b.Caption = "Refresh schedule list"
+    ' Two columns of three: routine jobs on the left, bulk edits on the right.
+    AddButton ws, leftCol, topRow, "SetupProject", "Set up / repair schedules"
+    AddButton ws, leftCol, topRow + 36, "RefreshScheduleList", "Refresh schedule list"
+    AddButton ws, leftCol, topRow + 72, "AddRevisionToTicked", "Add revision to ticked"
 
-    Set b = ws.Buttons.Add(ws.Range("H2").Left, ws.Range("H2").Top + 72, 200, 30)
-    b.OnAction = "AddRevisionToTicked"
-    b.Caption = "Add revision to ticked"
+    AddButton ws, leftCol + 210, topRow, "CopyHeadersFooters", "Copy headers && footers"
+    AddButton ws, leftCol + 210, topRow + 36, "CopyCommonSheets", "Copy cover && revision page"
+    AddButton ws, leftCol + 210, topRow + 72, "RenameFiles", "Rename files"
+End Sub
 
-    Set b = ws.Buttons.Add(ws.Range("H2").Left, ws.Range("H2").Top + 108, 200, 30)
-    b.OnAction = "CopyHeadersFooters"
-    b.Caption = "Copy headers && footers"
 
-    Set b = ws.Buttons.Add(ws.Range("H2").Left, ws.Range("H2").Top + 144, 200, 30)
-    b.OnAction = "CopyCommonSheets"
-    b.Caption = "Copy cover && revision page"
+Private Sub AddButton(ByVal ws As Worksheet, ByVal x As Double, ByVal y As Double, _
+                      ByVal macroName As String, ByVal label As String)
+    Dim b As Object
+    Set b = ws.Buttons.Add(x, y, 200, 30)
+    b.OnAction = macroName
+    b.Caption = label
 End Sub
 
 

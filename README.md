@@ -54,7 +54,7 @@ If that number is not what you expect, the import did not take.
 
 That's it. Nothing else is typed twice.
 
-## The five buttons
+## The six buttons
 
 **Set up / repair schedules** — opens every workbook in the folder, points its
 Metadata at this MPI, rebuilds the local references, clears leftover links from
@@ -194,6 +194,39 @@ a QA workflow.
 The reference schedule is remembered in `Setup!B11`, the logo in `Setup!B12`
 and its scale in `Setup!B13`, so re-running after a tweak is one click. The
 same `B11` reference is used by **Copy cover & revision page**.
+
+## Renaming files
+
+**Rename files** does a find and replace across schedule file names. The
+obvious use is swapping the `PROJECTNUMBER` placeholder in
+`Z9A...-PROJECTNUMBER-SC-M-...xlsx` for the real number across all 24 at once.
+
+It takes **two presses**:
+
+1. The first asks what to find and what to replace it with, then writes the
+   proposed names into the **New FileName** column and stops. Nothing is
+   renamed. Read them, edit any you want different, clear any you do not want.
+2. The second does the renaming.
+
+Typing a name straight into that column skips to step 2. Leave the extension
+off and the current one is kept.
+
+Every problem is found **before anything is renamed**, and any problem refuses
+the whole batch: an illegal character, a name that already exists, a file that
+is open, a changed file type, or two rows that would both become the same name.
+A half-renamed folder is far harder to unpick than a refusal.
+
+### Why it reopens each file
+
+Renaming does not break any links: schedules link to the MPI, never to each
+other, and the MPI finds them by scanning the folder.
+
+It is not cosmetic though. `Metadata!DocumentNumber` is derived from the file
+name via `CELL("filename")`, and that flows through to `Document no` on the
+Revision Page. The value stored in the file would keep showing the old document
+number until somebody happened to open it. So each renamed file is reopened,
+recalculated and saved, which puts the right number in the title block
+immediately.
 
 ## Copying the cover and revision page
 
