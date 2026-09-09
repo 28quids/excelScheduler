@@ -245,9 +245,27 @@ Typing a name straight into that column skips to step 2. Leave the extension
 off and the current one is kept.
 
 Every problem is found **before anything is renamed**, and any problem refuses
-the whole batch: an illegal character, a name that already exists, a file that
-is open, a changed file type, or two rows that would both become the same name.
-A half-renamed folder is far harder to unpick than a refusal.
+the whole batch: an illegal character, a file that is open, a changed file
+type, or two rows that would both become the same name. A half-renamed folder
+is far harder to unpick than a refusal.
+
+### Chains and swaps
+
+A target that already exists is only a problem when the file holding it is
+**not** itself being renamed. When it is, that is a chain or a swap, and it is
+worked out rather than refused:
+
+```
+A -> B, B -> C        B is renamed first, freeing the name for A
+A -> B, B -> A        both are parked under temporary names, then placed
+```
+
+Files are renamed in any order whose target is free, repeatedly, so a chain
+unwinds from its end. Whatever is left after that is a genuine loop, where
+every target is held by another file in the batch; those are moved to
+`_renaming1_<name>` first to break it, then put in place. Every step is on the
+Log sheet, including the temporary names, so an interrupted run can be unpicked
+by reading it.
 
 ### Why it reopens each file
 

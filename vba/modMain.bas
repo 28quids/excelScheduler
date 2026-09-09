@@ -947,22 +947,28 @@ End Function
 
 ' Second press: check the whole batch, then do it.
 '
-' Every problem is found before anything is renamed. A half-renamed folder is
-' far harder to unpick than a refusal.
+' Every problem is found before anything is renamed, and any one of them
+' refuses the lot. A target that already exists is the exception: when the
+' file holding it is itself being renamed, that is a chain or a swap and it
+' is worked out rather than refused.
 Private Sub ApplyRenames(ByVal wsList As Worksheet, ByVal folderPath As String)
     Dim r As Long, lastRow As Long
     Dim old As String, proposed As String
     Dim rowIdx() As Long, olds() As String, news() As String
+    Dim placed() As Boolean
     Dim n As Long, i As Long, j As Long
     Dim problems As String
     Dim done As Long, failed As Long
     Dim started As Double
     Dim wb As Workbook
+    Dim progress As Boolean
+    Dim temp As String
 
     lastRow = wsList.Cells(wsList.Rows.Count, C_FILE).End(xlUp).Row
     ReDim rowIdx(1 To lastRow)
     ReDim olds(1 To lastRow)
     ReDim news(1 To lastRow)
+    ReDim placed(1 To lastRow)
 
     For r = 2 To lastRow
         proposed = Trim$(AsText(wsList.Cells(r, C_NEWNAME).Value))
@@ -972,12 +978,13 @@ Private Sub ApplyRenames(ByVal wsList As Worksheet, ByVal folderPath As String)
             ' No extension typed means keep the one it has.
             If Len(FileExtension(proposed)) = 0 Then proposed = proposed & FileExtension(old)
 
-            n = n + 1
-            rowIdx(n) = r
-            olds(n) = old
-            news(n) = proposed
-
-            problems = problems & CheckRename(folderPath, old, proposed)
+            If StrComp(old, proposed, vbBinaryCompare) <> 0 Then
+                n = n + 1
+                rowIdx(n) = r
+                olds(n) = old
+                news(n) = proposed
+                problems = problems & CheckRename(folderPath, old, proposed)
+            End If
         End If
     Next r
 
@@ -990,6 +997,18 @@ Private Sub ApplyRenames(ByVal wsList As Worksheet, ByVal folderPath As String)
                 problems = problems & "Two schedules would both become '" & news(i) & "'. "
             End If
         Next j
+    Next i
+
+    ' A target that exists is only a problem when the file holding it is not
+    ' itself moving. When it is, this is a chain or a swap and it is handled
+    ' below rather than refused.
+    For i = 1 To n
+        If FileExists(EndSep(folderPath) & news(i)) Then
+            If Not InBatch(olds, n, news(i)) Then
+                problems = problems & "'" & news(i) & "' already exists and is not " & _
+                           "being renamed itself. "
+            End If
+        End If
     Next i
 
     If Len(problems) > 0 Then
@@ -1011,32 +1030,76 @@ Private Sub ApplyRenames(ByVal wsList As Worksheet, ByVal folderPath As String)
     ProgressStart n, "Renaming"
     started = Timer
 
+    ' Pass 1: rename anything whose target is free, repeatedly. Each one that
+    ' lands frees its old name, which may be another file's target, so a chain
+    ' unwinds from the end.
+    progress = True
+    Do While progress
+        progress = False
+        For i = 1 To n
+            If Not placed(i) Then
+                If Not FileExists(EndSep(folderPath) & news(i)) Then
+                    If RenameOne(folderPath, olds(i), news(i)) Then
+                        placed(i) = True
+                        progress = True
+                        done = done + 1
+                        LogLine olds(i), "OK", "Renamed to " & news(i)
+                        ProgressStep done, news(i)
+                    Else
+                        placed(i) = True
+                        failed = failed + 1
+                        LogLine olds(i), "FAILED", "Rename failed - " & Err.Description
+                    End If
+                End If
+            End If
+        Next i
+    Loop
+
+    ' Pass 2: whatever is left is a cycle, where every target is held by
+    ' another file in the batch. Park them under temporary names to break it,
+    ' then pass 1's logic finishes the job.
     For i = 1 To n
-        ProgressStep i - 1, olds(i)
+        If Not placed(i) Then
+            temp = FreeTempName(folderPath, olds(i))
+            If RenameOne(folderPath, olds(i), temp) Then
+                LogLine olds(i), "OK", "Held as " & temp & " to break a rename loop"
+                olds(i) = temp
+            Else
+                placed(i) = True
+                failed = failed + 1
+                LogLine olds(i), "FAILED", "Could not park the file - " & Err.Description
+            End If
+        End If
+    Next i
 
-        On Error Resume Next
-        Err.Clear
-        Name EndSep(folderPath) & olds(i) As EndSep(folderPath) & news(i)
-        On Error GoTo Fail
+    For i = 1 To n
+        If Not placed(i) Then
+            If RenameOne(folderPath, olds(i), news(i)) Then
+                placed(i) = True
+                done = done + 1
+                LogLine olds(i), "OK", "Renamed to " & news(i)
+                ProgressStep done, news(i)
+            Else
+                placed(i) = True
+                failed = failed + 1
+                LogLine olds(i), "FAILED", "Left as " & olds(i) & " - " & Err.Description
+            End If
+        End If
+    Next i
 
-        If Err.Number <> 0 Then
-            failed = failed + 1
-            LogLine olds(i), "FAILED", "Rename failed - " & Err.Description
-            Err.Clear
-        Else
-            ' Recalculate so the document number in the file matches its new
-            ' name, otherwise the title block keeps the old one until someone
-            ' happens to open it.
+    ' The document number comes from the file name, so each renamed file is
+    ' reopened and saved to put the new one in its title block.
+    For i = 1 To n
+        If FileExists(EndSep(folderPath) & news(i)) Then
+            ProgressStep i, news(i)
             Set wb = OpenQuiet(EndSep(folderPath) & news(i), False)
             If wb Is Nothing Then
-                LogLine olds(i), "OK", "Renamed to " & news(i) & _
-                        " but could not reopen it to refresh the document number."
+                LogLine news(i), "Skipped", "Renamed, but could not reopen it to " & _
+                        "refresh the document number."
             Else
                 Application.CalculateFull
                 wb.Close SaveChanges:=True
-                LogLine olds(i), "OK", "Renamed to " & news(i)
             End If
-            done = done + 1
             wsList.Cells(rowIdx(i), C_FILE).Value = news(i)
             wsList.Cells(rowIdx(i), C_NEWNAME).ClearContents
         End If
@@ -1051,6 +1114,45 @@ Private Sub ApplyRenames(ByVal wsList As Worksheet, ByVal folderPath As String)
 Fail:
     Recover "Rename files", wb
 End Sub
+
+
+' One rename. Returns False and leaves Err set when it will not go through.
+Private Function RenameOne(ByVal folderPath As String, ByVal fromName As String, _
+                           ByVal toName As String) As Boolean
+    On Error Resume Next
+    Err.Clear
+    Name EndSep(folderPath) & fromName As EndSep(folderPath) & toName
+    RenameOne = (Err.Number = 0)
+    On Error GoTo 0
+End Function
+
+
+' A name nothing in the folder is using, for parking a file mid-swap.
+Private Function FreeTempName(ByVal folderPath As String, ByVal fileName As String) As String
+    Dim i As Long
+    Dim candidate As String
+
+    For i = 1 To 1000
+        candidate = "_renaming" & i & "_" & fileName
+        If Not FileExists(EndSep(folderPath) & candidate) Then
+            FreeTempName = candidate
+            Exit Function
+        End If
+    Next i
+
+    FreeTempName = "_renaming" & Format$(Now, "hhnnss") & "_" & fileName
+End Function
+
+
+Private Function InBatch(ByRef olds() As String, ByVal n As Long, ByVal name As String) As Boolean
+    Dim i As Long
+    For i = 1 To n
+        If StrComp(olds(i), name, vbTextCompare) = 0 Then
+            InBatch = True
+            Exit Function
+        End If
+    Next i
+End Function
 
 
 ' Everything that would make one rename go wrong.
@@ -1074,9 +1176,6 @@ Private Function CheckRename(ByVal folderPath As String, ByVal old As String, _
 
     If Not FileExists(EndSep(folderPath) & old) Then _
         CheckRename = CheckRename & "'" & old & "' is not in the folder. "
-
-    If FileExists(EndSep(folderPath) & proposed) Then _
-        CheckRename = CheckRename & "'" & proposed & "' already exists. "
 
     If IsWorkbookOpen(old) Then _
         CheckRename = CheckRename & "'" & old & "' is open - close it first. "
