@@ -263,9 +263,22 @@ history is written back **by column header**, so it survives the reference
 reordering its columns, and the table is always cleared first, so a schedule
 with no history does not inherit the reference's.
 
+**A schedule with no Front Cover or Revision Page gets them.** Drop a bare
+schedule into the folder, press this, and it is given both sheets from the
+reference with an empty revision table. Its title is taken from the
+`SCHEDULE OF ...` heading on its own sheet, or failing that from the file name
+after the last ` - `. The schedule sheet itself is not otherwise touched.
+
 Afterwards the normal repair runs on the file, which is what makes the links
-local: nothing ends up pointing back at the reference workbook. Only
-`Metadata!B4:B6` still reach outside, to the MPI, exactly as everywhere else.
+local: nothing ends up pointing back at the reference workbook. That includes
+formulas **you** wrote by hand on the cover. Copying a sheet turns
+`='Revision Page'!B26` into `='[Golden.xlsx]Revision Page'!B26`, and the repair
+now points every such reference back at this workbook's own sheet, as long as a
+sheet of that name exists here. References to sheets this workbook does not
+have are left alone, because those are real links somewhere else.
+
+Only `Metadata!B4:B6` and the project fields still reach outside, to the MPI,
+exactly as everywhere else.
 
 It asks which schedules to hit. If any rows are ticked in `Add?` on
 ScheduleList you get the choice of just those or all of them; otherwise it is
@@ -328,6 +341,27 @@ reports) anything it cannot positively identify. It never guesses.
 - A sheet named **Front Cover** with `Intended for` and `Date` labels (values
   below them) and the title text starting `SCHEDULE OF...`.
 - A sheet named **Metadata** — fully owned by the tool, it rewrites it.
+
+## Extra project fields
+
+Anything else the whole project shares — a DfE code, a framework reference,
+whatever a client wants on every title block — goes in the **PROJECT FIELDS**
+block at the bottom of the Setup sheet. Name in column A, value in column B.
+
+The repair then does two things with each one:
+
+1. adds it to every schedule's Metadata sheet, one row after the fixed ones,
+   linked to the MPI exactly like Project Name is;
+2. if the Revision Page has a **label in column A with that exact name**, points
+   the cell beside it at that Metadata row.
+
+So adding a field is: type `DfE Code` and its value on the Setup sheet, add a
+`DfE Code` label to the reference schedule's Revision Page, press **Set up /
+repair schedules**, then **Copy cover & revision page** to give every other
+schedule the same label. After that the value comes from the MPI everywhere.
+
+The rows are rewritten in full on every repair, so deleting a field on the MPI
+deletes it from every schedule too.
 
 ## What gets written to Metadata
 
@@ -400,10 +434,16 @@ It **does** rebuild every cell that should be derived: the Metadata sheet, the
 linked cells on the Front Cover and Revision Page, the revision formulas, the
 suitability dropdown, leftover links and dead defined names.
 
-It **does not** copy layout or static text between workbooks. Two schedules
-whose front covers were built differently stay different. If you want one
-golden front cover pushed into all 24, that is a separate deliberate step and
-worth asking for on its own, because it overwrites whatever is there now.
+It **does not** copy layout or static text between workbooks. That is what
+**Copy cover & revision page** is for, deliberately separate because it
+overwrites whatever is there now.
+
+### The one cell it writes on a schedule sheet
+
+Only the title, the cell reading `SCHEDULE OF ...`, and only when it already
+matches the Revision Page title. If they disagree it is reported and left
+alone. Nothing else on a schedule sheet is ever touched: not a row, not a
+column, not a format.
 
 ## Running from Filery / SharePoint
 

@@ -114,6 +114,17 @@ Public Sub PutFormula(ByVal target As Range, ByVal f As String)
 End Sub
 
 
+Public Function RegexReplace(ByVal text As String, ByVal pattern As String, _
+                             ByVal replacement As String) As String
+    Dim re As Object
+    Set re = CreateObject("VBScript.RegExp")
+    re.Global = True
+    re.IgnoreCase = True
+    re.pattern = pattern
+    RegexReplace = re.Replace(text, replacement)
+End Function
+
+
 Public Function BaseName(ByVal fullPath As String) As String
     Dim p As Long
     p = InStrRev(fullPath, Application.PathSeparator)

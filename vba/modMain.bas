@@ -24,6 +24,8 @@ Private Const R_OPT_HFSCALE As Long = 13
 Private Const R_OPT_SETUP   As Long = 14   ' read only
 Private Const R_OPT_LIST    As Long = 15   ' read only
 Private Const R_REV_FIRST   As Long = 18   ' Revision..Description = 18..24
+Private Const R_FLD_FIRST   As Long = 27   ' extra project fields
+Private Const R_FLD_COUNT   As Long = 12
 
 ' Option rows are WRITTEN at the constants above but READ by these labels.
 ' The rows have moved every time an option was added, and each move left the
@@ -187,7 +189,8 @@ Public Sub SetupProject()
             oneLog = ""
             On Error Resume Next
             oneLog = RepairWorkbook(wbTgt, ThisWorkbook.FullName, SH_SETUP, _
-                                    projNameRef, projNoRef, clientRef, statuses)
+                                    projNameRef, projNoRef, clientRef, statuses, _
+                                    ProjectFields(wsSetup))
             If Err.Number <> 0 Then
                 LogLine fileName, "FAILED", "Error " & Err.Number & " - " & Err.Description
                 Err.Clear
@@ -738,12 +741,10 @@ Public Sub CopyCommonSheets()
         If wbTgt Is Nothing Then
             failed = failed + 1
             LogLine fileName, "FAILED", "Could not open the file."
-        ElseIf Not LooksLikeSchedule(wbTgt) Then
-            wbTgt.Close SaveChanges:=False
-            skipped = skipped + 1
-            LogLine fileName, "Skipped", "No Revision Page - not a schedule."
         Else
-            oneLog = CopyCommonSheetsTo(wbSrc, wbTgt)
+            ' Unlike the other buttons this one does not require a Revision
+            ' Page: giving a bare schedule its common sheets is the job.
+            oneLog = CopyCommonSheetsTo(wbSrc, wbTgt, fileName)
 
             If InStr(1, oneLog, "PROBLEM:", vbTextCompare) > 0 Then
                 wbTgt.Close SaveChanges:=False
@@ -752,7 +753,8 @@ Public Sub CopyCommonSheets()
             Else
                 ' Rebuild every link locally, so none point at the reference.
                 oneLog = oneLog & RepairWorkbook(wbTgt, ThisWorkbook.FullName, SH_SETUP, _
-                                                 projNameRef, projNoRef, clientRef, statuses)
+                                                 projNameRef, projNoRef, clientRef, statuses, _
+                                                 ProjectFields(wsSetup))
                 wbTgt.Close SaveChanges:=True
                 done = done + 1
                 LogLine fileName, "OK", oneLog
@@ -1591,6 +1593,52 @@ Private Function Opt(ByVal wsSetup As Worksheet, ByVal label As String, _
 End Function
 
 
+' The extra project fields, as a two-column array of name and the absolute
+' address of the cell holding its value. Blank names are skipped, so gaps in
+' the block are fine.
+Private Function ProjectFields(ByVal wsSetup As Worksheet) As Variant
+    Dim out() As Variant
+    Dim r As Long, n As Long
+    Dim nm As String
+    Dim first As Range
+
+    Set first = FindLabel(wsSetup, "PROJECT FIELDS", 6, 60)
+    If first Is Nothing Then
+        ProjectFields = Empty
+        Exit Function
+    End If
+
+    ReDim out(1 To R_FLD_COUNT, 1 To 2)
+    For r = first.Row + 1 To first.Row + R_FLD_COUNT
+        nm = Trim$(CStr(wsSetup.Cells(r, 1).Value))
+        If Len(nm) > 0 Then
+            n = n + 1
+            out(n, 1) = nm
+            out(n, 2) = AbsRef(wsSetup.Cells(r, 2))
+        End If
+    Next r
+
+    If n = 0 Then
+        ProjectFields = Empty
+    Else
+        ReDim Preserve out(1 To R_FLD_COUNT, 1 To 2)
+        ProjectFields = TrimFields(out, n)
+    End If
+End Function
+
+
+Private Function TrimFields(ByVal src As Variant, ByVal n As Long) As Variant
+    Dim out() As Variant
+    Dim i As Long
+    ReDim out(1 To n, 1 To 2)
+    For i = 1 To n
+        out(i, 1) = src(i, 1)
+        out(i, 2) = src(i, 2)
+    Next i
+    TrimFields = out
+End Function
+
+
 Private Function EnsureSheet(ByVal sheetName As String) As Worksheet
     Dim ws As Worksheet
     Set ws = GetSheet(ThisWorkbook, sheetName)
@@ -1607,9 +1655,9 @@ Private Sub BuildSetupSheet(ByVal ws As Worksheet)
     ' on can move between versions and a leftover line is worse than no line.
     ' Column B is left alone - that is the user's data. So is column F, the
     ' suitability codes, and every other sheet in the workbook.
-    ws.Range("A1:F40").ClearFormats
-    ws.Range("A5:A40").ClearContents
-    ws.Range("C1:C40").ClearContents
+    ws.Range("A1:F60").ClearFormats
+    ws.Range("A5:A60").ClearContents
+    ws.Range("C1:C60").ClearContents
     ws.Range("H1:H30").ClearFormats
     ws.Range("H1:H30").ClearContents
     ws.Range("A1:A" & R_REV_FIRST + 6).Font.Color = CLR_LABEL
@@ -1618,7 +1666,8 @@ Private Sub BuildSetupSheet(ByVal ws As Worksheet)
     ' spacers, which squashed the suitability codes sharing those rows in F.
     ws.Rows(2).RowHeight = ws.StandardHeight
     ws.Rows(5).RowHeight = ws.StandardHeight
-    ws.Rows(14).RowHeight = ws.StandardHeight
+    ws.Rows(16).RowHeight = ws.StandardHeight
+    ws.Rows(25).RowHeight = ws.StandardHeight
 
     ' --- Project -----------------------------------------------------------
     ' Rows 1, 3 and 4 are fixed. Schedules set up before now link to $B$1,
@@ -1693,6 +1742,11 @@ Private Sub BuildSetupSheet(ByVal ws As Worksheet)
     InputCell ws.Range(ws.Cells(R_REV_FIRST, 2), ws.Cells(R_REV_FIRST + 6, 2))
     ws.Cells(R_REV_FIRST + 2, 2).NumberFormat = "dd/mm/yyyy"
 
+    ' --- Extra project fields ---------------------------------------------
+    SectionHeader ws, R_FLD_FIRST - 1, "PROJECT FIELDS"
+    Note ws.Cells(R_FLD_FIRST - 1, 3), "anything else the whole project shares, e.g. DfE Code"
+    InputCell ws.Range(ws.Cells(R_FLD_FIRST, 1), ws.Cells(R_FLD_FIRST + R_FLD_COUNT - 1, 2))
+
     ' --- Suitability codes -------------------------------------------------
     SectionHeader ws, 1, "SUITABILITY CODES", 6
     If SuitabilityCount(ws) = 0 Then SeedSuitabilityCodes ws
@@ -1721,7 +1775,7 @@ Private Sub BuildSetupSheet(ByVal ws As Worksheet)
     ws.Columns("D:E").ColumnWidth = 3
     ws.Columns("F").ColumnWidth = 34
     ws.Columns("G").ColumnWidth = 3
-    ws.Range("A1:F40").VerticalAlignment = xlCenter
+    ws.Range("A1:F60").VerticalAlignment = xlCenter
 End Sub
 
 

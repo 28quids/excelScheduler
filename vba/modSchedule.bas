@@ -101,7 +101,8 @@ Public Function RepairWorkbook(ByVal wbTgt As Workbook, _
                                ByVal projNameRef As String, _
                                ByVal projNoRef As String, _
                                ByVal clientRef As String, _
-                               ByVal statuses As Variant) As String
+                               ByVal statuses As Variant, _
+                               ByVal fields As Variant) As String
 
     Dim wsFront As Worksheet, wsMeta As Worksheet, wsRev As Worksheet
     Dim log As String
@@ -134,7 +135,10 @@ Public Function RepairWorkbook(ByVal wbTgt As Workbook, _
     End If
 
     ' --- Metadata --------------------------------------------------------
-    log = log & WriteMetadata(wsMeta, wsRev, mpiPrefix, projNameRef, projNoRef, clientRef)
+    log = log & WriteMetadata(wsMeta, wsRev, mpiPrefix, projNameRef, projNoRef, clientRef, fields)
+
+    ' Wire any Revision Page label that matches a project field.
+    log = log & LinkProjectFields(wsRev, wsMeta, fields)
 
     ' --- Revision Page ---------------------------------------------------
     Set revTitle = FindTitleCell(wsRev)
@@ -196,6 +200,9 @@ Public Function RepairWorkbook(ByVal wbTgt As Workbook, _
     ' --- Suitability dropdown, kept local so it survives without the MPI --
     log = log & WriteStatusList(wsMeta, wsRev, statuses)
 
+    ' --- Anything hand-written that got externalised by a sheet copy ------
+    log = log & LocaliseFormulas(wbTgt)
+
     ' --- Housekeeping ----------------------------------------------------
     log = log & RemoveDeadNames(wbTgt)
     log = log & TidyLinks(wbTgt, mpiName)
@@ -208,10 +215,12 @@ End Function
 Private Function WriteMetadata(ByVal wsMeta As Worksheet, ByVal wsRev As Worksheet, _
                                ByVal mpiPrefix As String, _
                                ByVal projNameRef As String, ByVal projNoRef As String, _
-                               ByVal clientRef As String) As String
+                               ByVal clientRef As String, ByVal fields As Variant) As String
     Dim lo As ListObject
     Dim log As String
     Dim rv As String
+    Dim lastRow As Long
+    Dim i As Long
 
     rv = SheetRef(wsRev.Name) & "!"
 
@@ -219,9 +228,10 @@ Private Function WriteMetadata(ByVal wsMeta As Worksheet, ByVal wsRev As Workshe
     On Error Resume Next
     Set lo = wsMeta.ListObjects(1)
     On Error GoTo 0
+    lastRow = META_LAST_ROW + FieldCount(fields)
     If Not lo Is Nothing Then
         On Error Resume Next
-        lo.Resize wsMeta.Range("A1:B" & META_LAST_ROW)
+        lo.Resize wsMeta.Range("A1:B" & lastRow)
         On Error GoTo 0
     End If
 
@@ -255,6 +265,15 @@ Private Function WriteMetadata(ByVal wsMeta As Worksheet, ByVal wsRev As Workshe
     log = log & MetaRow(wsMeta, 13, "Suitability Status", wsRev, "Suitability Status")
     log = log & MetaRow(wsMeta, 14, "Suitability Description", wsRev, "Suitability Description")
 
+    ' Extra project fields from the MPI, one row each after the fixed ones.
+    ' Rewritten in full every run, so removing a field on the MPI removes it
+    ' from every schedule too.
+    wsMeta.Range("A" & (META_LAST_ROW + 1) & ":B" & (META_LAST_ROW + 60)).ClearContents
+    For i = 1 To FieldCount(fields)
+        wsMeta.Cells(META_LAST_ROW + i, 1).Value = fields(i, 1)
+        PutFormula wsMeta.Cells(META_LAST_ROW + i, 2), "=" & mpiPrefix & fields(i, 2)
+    Next i
+
     wsMeta.Range("B9").NumberFormat = "dd/mm/yyyy"
     wsMeta.Columns("A:B").AutoFit
 
@@ -265,6 +284,43 @@ Private Function WriteMetadata(ByVal wsMeta As Worksheet, ByVal wsRev As Workshe
     End If
 
     WriteMetadata = log
+End Function
+
+
+Public Function FieldCount(ByVal fields As Variant) As Long
+    On Error Resume Next
+    If IsArray(fields) Then FieldCount = UBound(fields, 1)
+    If Err.Number <> 0 Then
+        Err.Clear
+        FieldCount = 0
+    End If
+    On Error GoTo 0
+End Function
+
+
+' Points any Revision Page label that matches a project field at the Metadata
+' row holding it. Add "DfE Code" to column A of the reference schedule''s
+' Revision Page, and every schedule picks the value up from the MPI.
+Private Function LinkProjectFields(ByVal wsRev As Worksheet, ByVal wsMeta As Worksheet, _
+                                   ByVal fields As Variant) As String
+    Dim i As Long, n As Long
+    Dim lbl As Range
+    Dim wired As Long
+
+    n = FieldCount(fields)
+    If n = 0 Then Exit Function
+
+    For i = 1 To n
+        Set lbl = FindLabel(wsRev, CStr(fields(i, 1)))
+        If Not lbl Is Nothing Then
+            PutFormula lbl.Offset(0, 1), _
+                "=" & SheetRef(wsMeta.Name) & "!B" & (META_LAST_ROW + i)
+            wired = wired + 1
+        End If
+    Next i
+
+    If wired > 0 Then _
+        LinkProjectFields = "Linked " & wired & " project field(s) on the Revision Page. "
 End Function
 
 
@@ -396,6 +452,70 @@ Private Function WriteStatusList(ByVal wsMeta As Worksheet, ByVal wsRev As Works
     rng.Validation.IgnoreBlank = True
     rng.Validation.InCellDropdown = True
     On Error GoTo 0
+End Function
+
+
+' Rewrites references that point at another workbook's copy of a sheet this
+' workbook has itself.
+'
+' Copying a sheet in from a reference turns every formula on it that referred
+' to a sheet in the reference into an external one:
+'
+'     ='Revision Page'!B26   becomes   ='[Golden.xlsx]Revision Page'!B26
+'
+' The repair fixes the cells it writes itself, but not one somebody added by
+' hand on the cover. This catches all of them: any external reference naming a
+' sheet that exists here is pointed at the local sheet instead. References to
+' sheets this workbook does not have are left alone, because those are real
+' links to somewhere else and breaking them silently would be worse.
+Private Function LocaliseFormulas(ByVal wb As Workbook) As String
+    Dim ws As Worksheet, target As Worksheet
+    Dim rng As Range, cell As Range
+    Dim re As Object, matches As Object, m As Object
+    Dim f As String, newF As String
+    Dim sheetName As String
+    Dim changed As Long
+
+    Set re = CreateObject("VBScript.RegExp")
+    re.Global = True
+    re.IgnoreCase = True
+    ' '[Book.xlsx]Sheet Name'!  or  [Book.xlsx]SheetName!
+    re.pattern = "'\[[^\]\[]+\]([^']+)'!|\[[^\]\[]+\]([A-Za-z0-9_.]+)!"
+
+    For Each ws In wb.Worksheets
+        Set rng = Nothing
+        On Error Resume Next
+        Set rng = ws.UsedRange.SpecialCells(xlCellTypeFormulas)
+        On Error GoTo 0
+        If Not rng Is Nothing Then
+            For Each cell In rng.Cells
+                f = CellFormula(cell)
+                If InStr(f, "[") > 0 Then
+                    newF = f
+                    Set matches = re.Execute(f)
+                    For Each m In matches
+                        sheetName = m.SubMatches(0)
+                        If Len(sheetName) = 0 Then sheetName = m.SubMatches(1)
+                        Set target = GetSheet(wb, sheetName)
+                        If Not target Is Nothing Then
+                            newF = Replace(newF, m.Value, SheetRef(target.Name) & "!")
+                        End If
+                    Next m
+
+                    ' Table references lose their workbook prefix the same way.
+                    newF = RegexReplace(newF, "\[[^\]\[]+\]!(?=[A-Za-z_])", "")
+
+                    If StrComp(newF, f, vbBinaryCompare) <> 0 Then
+                        PutFormula cell, newF
+                        changed = changed + 1
+                    End If
+                End If
+            Next cell
+        End If
+    Next ws
+
+    If changed > 0 Then _
+        LocaliseFormulas = "Pointed " & changed & " formula(s) back at this workbook's own sheets. "
 End Function
 
 
@@ -1136,7 +1256,8 @@ End Function
 
 ' Returns "" when nothing needed saying, or a log fragment. The caller runs
 ' the repair afterwards and saves.
-Public Function CopyCommonSheetsTo(ByVal wbSrc As Workbook, ByVal wbTgt As Workbook) As String
+Public Function CopyCommonSheetsTo(ByVal wbSrc As Workbook, ByVal wbTgt As Workbook, _
+                                   ByVal fileName As String) As String
     Dim wsSrcFront As Worksheet, wsSrcRev As Worksheet
     Dim wsRev As Worksheet, wsFront As Worksheet
     Dim rd As RevData
@@ -1154,25 +1275,33 @@ Public Function CopyCommonSheetsTo(ByVal wbSrc As Workbook, ByVal wbTgt As Workb
 
     Set wsRev = GetSheet(wbTgt, SH_REV)
     Set wsFront = GetSheet(wbTgt, SH_FRONT)
-    If wsRev Is Nothing Then
-        CopyCommonSheetsTo = "PROBLEM: no '" & SH_REV & "' sheet to take the history from. "
-        Exit Function
-    End If
 
     ' --- everything that belongs to this document, before anything is deleted
-    title = CapturedTitle(wsRev)
-    rd = CaptureRevisions(wsRev)
-    Set keeps = CaptureKeeps(wsRev)
+    If wsRev Is Nothing Then
+        ' A schedule that has never had these sheets. It gets them from the
+        ' reference with an empty revision table, and its title is taken from
+        ' the schedule sheet, or failing that from the file name.
+        log = log & "No Revision Page - creating one from the reference. "
+        title = TitleFromWorkbook(wbTgt, fileName)
+        idxRev = wbTgt.Worksheets.Count + 1
+        idxFront = idxRev
+    Else
+        title = CapturedTitle(wsRev)
+        rd = CaptureRevisions(wsRev)
+        Set keeps = CaptureKeeps(wsRev)
 
-    If Not rd.Valid Then log = log & "No RevisionTable found to preserve. "
-    If Len(title) = 0 Then log = log & "No schedule title found to preserve. "
+        If Not rd.Valid Then log = log & "No RevisionTable found to preserve. "
+        If Len(title) = 0 Then title = TitleFromWorkbook(wbTgt, fileName)
 
-    idxRev = wsRev.Index
-    If wsFront Is Nothing Then idxFront = idxRev Else idxFront = wsFront.Index
+        idxRev = wsRev.Index
+        If wsFront Is Nothing Then idxFront = idxRev Else idxFront = wsFront.Index
+    End If
+
+    If Len(title) = 0 Then log = log & "PROBLEM: could not work out a schedule title. "
 
     ' --- swap the sheets -------------------------------------------------
     If Not wsFront Is Nothing Then wsFront.Delete
-    wsRev.Delete
+    If Not wsRev Is Nothing Then wsRev.Delete
 
     If Not wsSrcFront Is Nothing Then
         log = log & PlaceCopy(wsSrcFront, wbTgt, SH_FRONT, idxFront)
@@ -1214,6 +1343,30 @@ Private Function PlaceCopy(ByVal wsSrc As Worksheet, ByVal wbTgt As Workbook, _
 
 Failed:
     PlaceCopy = "PROBLEM: could not place '" & wantName & "' - " & Err.Description & ". "
+End Function
+
+
+' A title for a schedule that has no Revision Page to take one from: the
+' "SCHEDULE OF ..." heading on its own sheet, or the tail of the file name.
+Private Function TitleFromWorkbook(ByVal wb As Workbook, ByVal fileName As String) As String
+    Dim ws As Worksheet
+    Dim t As Range
+    Dim tail As String
+
+    For Each ws In wb.Worksheets
+        If Not IsCommonSheet(ws) Then
+            Set t = FindTitleCell(ws)
+            If Not t Is Nothing Then
+                TitleFromWorkbook = Trim$(CStr(t.Value))
+                Exit Function
+            End If
+        End If
+    Next ws
+
+    tail = fileName
+    If InStrRev(tail, ".") > 1 Then tail = Left$(tail, InStrRev(tail, ".") - 1)
+    If InStr(tail, " - ") > 0 Then tail = Mid$(tail, InStrRev(tail, " - ") + 3)
+    TitleFromWorkbook = Trim$(tail)
 End Function
 
 
