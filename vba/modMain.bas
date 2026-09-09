@@ -59,6 +59,10 @@ Private Const C_STAMP     As Long = 25     ' hidden, file modified time
 Private Const C_FILECHK   As Long = 26     ' hidden, checks that come from the file itself
 Private Const REV_FIELDS  As Long = 7      ' Rev, Status, Date, Pr, Ch, Ap, Descr
 
+' How many runs the Log sheet keeps. Every button finishes by refreshing the
+' list, so a log that held one run only ever showed the refresh.
+Private Const LOG_RUNS As Long = 5
+
 Private mLogRow As Long
 
 
@@ -81,7 +85,7 @@ Public Sub InstallTool()
     BuildListHeaders wsList
     wsList.Range(wsList.Cells(2, 1), wsList.Cells(wsList.Rows.Count, C_FILECHK)).Clear
     SetColumnState wsList
-    EnsureSheet(SH_LOG).Cells.Clear
+    EnsureSheet SH_LOG
     BuildButtons wsSetup
 
     If hadCodes > 0 Then
@@ -1358,23 +1362,57 @@ End Sub
 ' ===========================================================================
 Private Sub LogStart(ByVal what As String)
     Dim ws As Worksheet
+
     Set ws = EnsureSheet(SH_LOG)
-    ws.Cells.Clear
+    TrimLog ws, LOG_RUNS - 1
+
+    ' Newest run at the top, so the Log sheet opens on what just happened.
+    ws.Rows("1:3").Insert Shift:=xlDown
+    ws.Rows("1:3").ClearFormats
+
     ws.Range("A1").Value = what & " - " & Format$(Now, "dd/mm/yyyy hh:nn:ss")
-    ws.Range("A1").Font.Bold = True
+    ws.Range("A1:C1").Font.Bold = True
+    ws.Range("A1:C1").Interior.Color = RGB(221, 231, 244)
+    ws.Range("E1").Value = "RUN"          ' marks where a run starts, for trimming
+
     ws.Range("A2").Value = "File"
     ws.Range("B2").Value = "Result"
     ws.Range("C2").Value = "Notes"
     ws.Range("A2:C2").Font.Bold = True
+
+    ws.Columns("E").Hidden = True
     mLogRow = 3
+End Sub
+
+
+' Drops the oldest runs, keeping the newest `keep` of them.
+Private Sub TrimLog(ByVal ws As Worksheet, ByVal keep As Long)
+    Dim r As Long, lastRow As Long, runs As Long
+
+    lastRow = ws.Cells(ws.Rows.Count, 1).End(xlUp).Row
+    If lastRow < 2 Then Exit Sub
+
+    For r = 1 To lastRow
+        If StrComp(Trim$(CStr(ws.Cells(r, 5).Value)), "RUN", vbTextCompare) = 0 Then
+            runs = runs + 1
+            If runs > keep Then
+                ws.Range(ws.Rows(r), ws.Rows(lastRow + 2)).Delete Shift:=xlUp
+                Exit Sub
+            End If
+        End If
+    Next r
 End Sub
 
 
 Private Sub LogLine(ByVal fileName As String, ByVal result As String, ByVal notes As String)
     Dim ws As Worksheet
+
     Set ws = GetSheet(ThisWorkbook, SH_LOG)
     If ws Is Nothing Then Exit Sub
     If mLogRow < 3 Then mLogRow = 3
+
+    ws.Rows(mLogRow).Insert Shift:=xlDown
+    ws.Rows(mLogRow).ClearFormats
 
     ws.Cells(mLogRow, 1).Value = fileName
     ws.Cells(mLogRow, 2).Value = result
@@ -1395,7 +1433,11 @@ Private Sub ShowSummary(ByVal what As String, ByVal okCount As Long, ByVal other
     Dim icon As Long
 
     Set ws = GetSheet(ThisWorkbook, SH_LOG)
-    If Not ws Is Nothing Then ws.Columns("A:C").AutoFit
+    If Not ws Is Nothing Then
+        ws.Columns("A:C").AutoFit
+        If ws.Columns("C").ColumnWidth > 90 Then ws.Columns("C").ColumnWidth = 90
+        ws.Columns("E").Hidden = True
+    End If
 
     msg = okCount & " succeeded" & vbCrLf & _
           otherCount & " skipped / unchanged" & vbCrLf & _
@@ -1403,7 +1445,8 @@ Private Sub ShowSummary(ByVal what As String, ByVal okCount As Long, ByVal other
           "Took " & Duration(seconds) & "."
 
     If Len(extra) > 0 Then msg = msg & vbCrLf & vbCrLf & extra
-    msg = msg & vbCrLf & vbCrLf & "Line by line detail is on the Log sheet."
+    msg = msg & vbCrLf & vbCrLf & "Line by line detail is at the top of the Log sheet, " & _
+          "which keeps the last " & LOG_RUNS & " runs."
 
     icon = IIf(failCount > 0, vbExclamation, vbInformation)
     MsgBox msg, icon, what

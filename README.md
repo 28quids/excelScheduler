@@ -380,6 +380,12 @@ old files already used, so nothing existing breaks.
 
 ## Progress, speed and the log
 
+The **Log** sheet keeps the last **5 runs**, newest at the top. It has to: every
+button finishes by refreshing the list, so a log holding one run only ever
+showed the refresh, never the thing you actually pressed. Each run is a
+title row with the time, then a line per file. Change `LOG_RUNS` at the top of
+`modMain.bas` to keep more or fewer.
+
 Both long-running buttons show progress and a time estimate on the status bar
 (bottom-left of the Excel window, and there is a note saying so under the
 buttons on the Setup sheet), e.g. `Setting up schedules: 7 of 24 (29%) - about 1m 20s left -
