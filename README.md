@@ -555,3 +555,47 @@ URLs.
   has been saved once.
 - The title cell is located within the first 60 rows / 10 columns of a sheet.
 - Revision numbers above 999 would collide across families.
+
+## Not wired in yet: PDF export
+
+`vba/modExport.bas` is a standalone module, **not part of the tool**. There is
+no button for it, `InstallTool` does not know about it, and the other three
+modules do not call it. Import it alongside them and run **ExportToPdf** from
+`Alt+F8`.
+
+It asks four things and then gets on with it:
+
+1. **Which schedules** — every workbook in a folder you pick, or the files you
+   pick yourself (Ctrl or Shift to select several, from anywhere).
+2. **Where the PDFs go** — `_pdf` inside the folder they came from, created if
+   it is not there, or a folder you pick.
+3. **One PDF per workbook or one per sheet** — per workbook is the usual
+   answer: cover, revision page and schedule come out as a single document with
+   continuous page numbers.
+4. **Overwrite existing PDFs** — only asked when the destination already holds
+   some.
+
+Every sheet in the workbook is exported, in tab order, except `Metadata` and
+any sheet with nothing on it to print. An empty sheet in the selection fails
+the whole export, which is why they are filtered out rather than left to break
+a file that would otherwise have been fine.
+
+Files are opened **read only, with links not updated and calculation off**, so
+the PDF is exactly what is saved in the file, the same rule the schedule list
+follows. Nothing is written back to any schedule. A workbook already open in
+Excel is skipped rather than closed underneath you.
+
+Two files of the same name, picked from different folders, are refused before
+anything is written: they would produce one PDF, and the second would silently
+replace the first.
+
+Results go to the top of the Log sheet like every other run, and it finishes
+with the usual summary box.
+
+### Wiring it in later
+
+It uses `modUtil` and nothing else. The logging, quiet-mode and recovery
+helpers at the bottom of the module are local copies of `modMain`'s, which are
+`Private` to that module and cannot be called from outside it. Wiring it in
+means adding a button in `BuildButtons`, then either moving the entry points
+into `modMain` or making `modMain`'s copies `Public`, and deleting the copies.
