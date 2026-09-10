@@ -28,6 +28,7 @@ Private Const MAX_PATH_LEN As Long = 255
 Private Const EXPORT_LOG_RUNS As Long = 5
 
 Private mLogRow As Long
+Private mCalcSaved As XlCalculation
 
 
 ' ===========================================================================
@@ -77,9 +78,9 @@ Public Sub ExportToPdf()
                             "One PDF per workbook, every sheet in tab order.") & vbCrLf & _
               IIf(overwrite, "PDFs that already exist are overwritten.", _
                              "PDFs that already exist are left alone.") & vbCrLf & vbCrLf & _
-              "Each workbook is opened read only, without updating its links and " & _
-              "without recalculating, so the PDF shows exactly what is saved in the " & _
-              "file. Nothing is written back to any schedule." & vbCrLf & vbCrLf & _
+              "Each workbook is opened read only, with its links updated and " & _
+              "recalculated, so the PDF matches what you see on screen. Nothing is " & _
+              "written back to any schedule." & vbCrLf & vbCrLf & _
               "Continue?", vbQuestion + vbYesNo, "Export to PDF") = vbNo Then Exit Sub
 
     On Error GoTo Fail
@@ -586,11 +587,27 @@ Private Function JoinCollection(ByVal c As Collection, ByVal sep As String) As S
 End Function
 
 
+' Opened read only so nothing can be written back, but otherwise exactly the
+' way you would open it yourself: links updated and calculation on.
+'
+' It used to open with UpdateLinks:=0 under manual calculation, to print what
+' was saved in the file rather than today's values, the same rule the schedule
+' list reads by. A schedule opened cold that way came out of the PDF export
+' with a line through every calculated value, while the same file exported by
+' hand was clean. Opening it the ordinary way is not worth defending against
+' for the sake of a rule that only ever mattered to the QA list.
 Private Function OpenQuiet(ByVal fullPath As String) As Workbook
     Dim wb As Workbook
 
     On Error Resume Next
-    Set wb = Workbooks.Open(fileName:=fullPath, ReadOnly:=True, UpdateLinks:=0)
+    Set wb = Workbooks.Open(fileName:=fullPath, ReadOnly:=True, UpdateLinks:=3)
+    If Err.Number <> 0 Then Err.Clear
+    On Error GoTo 0
+
+    ' Belt and braces: with automatic calculation the open recalculates, but
+    ' the whole bug came from exporting a workbook that had not.
+    On Error Resume Next
+    Application.Calculate
     If Err.Number <> 0 Then Err.Clear
     On Error GoTo 0
 
@@ -604,22 +621,37 @@ End Function
 ' Delete these when this is wired into the tool.
 ' ===========================================================================
 
+' Quieter than the rest of the tool on purpose.
+'
+' Calculation is forced ON and events are left alone. Turning both off and
+' then opening a schedule cold is what struck a line through every calculated
+' value in the PDF. Each of those settings is harmless on its own; together,
+' before the open, they are not. Only the two that cannot affect what is
+' rendered are turned off here.
+'
+' Forced rather than merely left alone, because Excel may already be sitting
+' in manual calculation from something else the user was doing. Whatever it
+' was is put back by EndQuiet.
 Private Sub BeginQuiet()
+    mCalcSaved = Application.Calculation
     Application.ScreenUpdating = False
     Application.DisplayAlerts = False
-    Application.EnableEvents = False
     Application.AskToUpdateLinks = False
-    ' Manual, because the point is to print what is saved in the file. A
-    ' recalculation would pull today's values out of the MPI instead.
-    Application.Calculation = xlCalculationManual
+    On Error Resume Next
+    Application.Calculation = xlCalculationAutomatic
+    If Err.Number <> 0 Then Err.Clear
+    On Error GoTo 0
 End Sub
 
 
 Private Sub EndQuiet()
-    Application.Calculation = xlCalculationAutomatic
+    On Error Resume Next
+    If mCalcSaved <> 0 Then Application.Calculation = mCalcSaved
+    If Err.Number <> 0 Then Err.Clear
+    On Error GoTo 0
+
     Application.ScreenUpdating = True
     Application.DisplayAlerts = True
-    Application.EnableEvents = True
     Application.AskToUpdateLinks = True
     Application.StatusBar = False
 End Sub

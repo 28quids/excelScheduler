@@ -580,10 +580,18 @@ any sheet with nothing on it to print. An empty sheet in the selection fails
 the whole export, which is why they are filtered out rather than left to break
 a file that would otherwise have been fine.
 
-Files are opened **read only, with links not updated and calculation off**, so
-the PDF is exactly what is saved in the file, the same rule the schedule list
-follows. Nothing is written back to any schedule. A workbook already open in
-Excel is skipped rather than closed underneath you.
+Files are opened **read only, but otherwise the ordinary way**: links updated,
+calculation on. Nothing is written back to any schedule. A workbook already
+open in Excel is skipped rather than closed underneath you.
+
+An earlier version opened them with links not updated and calculation off, to
+print what was saved in the file rather than today's values, the way the
+schedule list reads. Those files exported with **a line struck through every
+calculated value**, while the same file exported by hand was clean. Manual
+calculation, events off and screen updating off are each harmless on their
+own; set together before the file is opened, they are not. So the export now
+turns off only the two settings that cannot affect what is rendered, and puts
+your calculation mode back afterwards.
 
 Two files of the same name, picked from different folders, are refused before
 anything is written: they would produce one PDF, and the second would silently
