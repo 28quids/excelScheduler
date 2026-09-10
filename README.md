@@ -593,6 +593,13 @@ own; set together before the file is opened, they are not. So the export now
 turns off only the two settings that cannot affect what is rendered, and puts
 your calculation mode back afterwards.
 
+A PDF already in the way is deleted before the export writes, with its
+read-only attribute cleared if it has one. Excel refuses to overwrite a
+read-only file and reports it only as "Document not saved", so the file is
+moved out of the way first and a PDF that genuinely cannot be replaced, one
+open in a viewer or held by the Explorer preview pane, is named on the Log
+sheet.
+
 Two files of the same name, picked from different folders, are refused before
 anything is written: they would produce one PDF, and the second would silently
 replace the first.

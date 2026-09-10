@@ -445,6 +445,13 @@ Private Function WritePdf(ByVal wb As Workbook, ByVal sheetNames As Variant, _
         Exit Function
     End If
 
+    ' Excel will not overwrite a file that carries the read-only attribute, and
+    ' fails with "Document not saved" rather than saying so. By the time this
+    ' is called the caller has already decided the file is to be replaced, so
+    ' the old one is cleared out of the way first.
+    WritePdf = ClearTarget(outPath)
+    If Len(WritePdf) > 0 Then Exit Function
+
     On Error Resume Next
 
     If IsEmpty(sheetNames) Then
@@ -482,6 +489,28 @@ Private Function WritePdf(ByVal wb As Workbook, ByVal sheetNames As Variant, _
 End Function
 
 
+' Deletes an existing PDF so the export can write in its place, clearing the
+' read-only attribute if it has one. Returns "" when the path is free.
+Private Function ClearTarget(ByVal outPath As String) As String
+    Dim f As Object
+
+    If Not FileExists(outPath) Then Exit Function
+
+    On Error Resume Next
+    Set f = Fso.GetFile(outPath)
+    If (f.Attributes And 1) = 1 Then f.Attributes = f.Attributes - 1
+    f.Delete True
+    If Err.Number <> 0 Then Err.Clear
+    On Error GoTo 0
+
+    If FileExists(outPath) Then
+        ClearTarget = "PROBLEM: the PDF already there could not be replaced. It is " & _
+                      "open in a viewer, locked by the Explorer preview pane, or " & _
+                      "read only: " & outPath & " "
+    End If
+End Function
+
+
 ' True when the wanted sheets are simply everything visible in the workbook,
 ' charts included, in which case the workbook can be exported as it stands.
 Private Function CoversAllVisible(ByVal wb As Workbook, ByVal wanted As Collection) As Boolean
@@ -499,6 +528,9 @@ End Function
 ' The two errors this actually throws in practice, said in English.
 Private Function PdfErrorText(ByVal errNo As Long, ByVal errText As String) As String
     Select Case errNo
+        Case -2147018887          ' 0x80071779, Win32 6009: the file is read only
+            PdfErrorText = "Excel would not write the PDF because a read only file " & _
+                           "is in the way, or the destination folder is read only."
         Case 1004, 70
             PdfErrorText = "could not write the PDF (error " & errNo & "). It is " & _
                            "usually open in a PDF reader, or the folder is read only."
