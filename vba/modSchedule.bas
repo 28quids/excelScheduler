@@ -106,7 +106,8 @@ Public Function RepairWorkbook(ByVal wbTgt As Workbook, _
                                ByVal projNoRef As String, _
                                ByVal clientRef As String, _
                                ByVal statuses As Variant, _
-                               ByVal fields As Variant) As String
+                               ByVal fields As Variant, _
+                               Optional ByVal pageSetupToo As Boolean = True) As String
 
     Dim wsFront As Worksheet, wsMeta As Worksheet, wsRev As Worksheet
     Dim log As String
@@ -209,6 +210,9 @@ Public Function RepairWorkbook(ByVal wbTgt As Workbook, _
 
     ' --- Anything hand-written that got externalised by a sheet copy ------
     log = log & LocaliseFormulas(wbTgt)
+
+    ' --- Print area, paper and scaling -----------------------------------
+    If pageSetupToo Then log = log & ApplyPageSetup(wbTgt)
 
     ' --- Housekeeping ----------------------------------------------------
     log = log & RemoveDeadNames(wbTgt)
@@ -1779,6 +1783,166 @@ Private Function HideMetadata(ByVal wb As Workbook) As String
 
 Failed:
     HideMetadata = "PROBLEM: could not set sheet visibility - " & Err.Description & ". "
+End Function
+
+
+' ===========================================================================
+' Page setup
+'
+' Every sheet: A4, one page wide, as many pages down as it needs, and a print
+' area that stops where the content stops.
+'
+' That last part is the one that matters. Excel prints its used range, which
+' counts a cell that carries only a border or a fill, so a sheet whose values
+' end at row 41 but whose formatting runs to row 98 prints a second, blank
+' page. On a sheet set to fit one page tall it does something worse and
+' quieter: it shrinks everything to squeeze the empty rows in, which is why
+' covers come out at 47%.
+'
+' Orientation is deliberately not touched. A schedule is landscape and a cover
+' is portrait, and that is the sheet's business.
+'
+' No PrintCommunication = False here. It queues page setup writes rather than
+' applying them and they can be dropped silently, which is exactly the bug
+' that was taken out of the header and footer code.
+' ===========================================================================
+Public Function ApplyPageSetup(ByVal wb As Workbook) As String
+    Dim ws As Worksheet
+    Dim one As String, log As String
+
+    For Each ws In wb.Worksheets
+        If ws.Visible = xlSheetVisible Then
+            If LCase$(Trim$(ws.Name)) <> LCase$(SH_META) Then
+                one = PageSetupOne(ws)
+                If Len(one) > 0 Then log = log & ws.Name & ": " & one
+            End If
+        End If
+    Next ws
+
+    ApplyPageSetup = log
+End Function
+
+
+' Returns what changed on one sheet, "" if it was already right.
+Private Function PageSetupOne(ByVal ws As Worksheet) As String
+    Dim rng As Range
+    Dim wantArea As String
+    Dim tall As Variant
+    Dim log As String
+
+    Set rng = ContentRange(ws)
+    If rng Is Nothing Then Exit Function        ' nothing on it, leave it alone
+
+    wantArea = rng.Address(True, True, xlA1)
+
+    ' A front cover is one page by definition. Everything else runs on down as
+    ' far as it needs to, which is what a schedule of unknown length wants.
+    If LCase$(Trim$(ws.Name)) = LCase$(SH_FRONT) Then
+        tall = 1
+    Else
+        tall = False
+    End If
+
+    On Error Resume Next
+
+    With ws.PageSetup
+        If .PaperSize <> xlPaperA4 Then
+            .PaperSize = xlPaperA4
+            log = log & "A4, "
+        End If
+
+        ' Zoom must go first: scaling and fit-to-pages are the same setting
+        ' wearing two hats, and whichever is written last wins.
+        .Zoom = False
+
+        If .FitToPagesWide <> 1 Then
+            .FitToPagesWide = 1
+            log = log & "1 page wide, "
+        End If
+
+        If Not SameFit(.FitToPagesTall, tall) Then
+            .FitToPagesTall = tall
+            log = log & IIf(tall = 1, "1 page tall, ", "pages down as needed, ")
+        End If
+
+        If StrComp(.PrintArea, wantArea, vbTextCompare) <> 0 Then
+            .PrintArea = wantArea
+            log = log & "print area " & wantArea & ", "
+        End If
+    End With
+
+    If Err.Number <> 0 Then
+        log = log & "PROBLEM: page setup would not take - " & Err.Description & ". "
+        Err.Clear
+    End If
+
+    On Error GoTo 0
+
+    ' Written and read back, the way the header and footer writes are, because
+    ' page setup is one of the few things Excel will accept and then ignore.
+    If Len(log) > 0 Then
+        If StrComp(ws.PageSetup.PrintArea, wantArea, vbTextCompare) <> 0 Then
+            log = log & "PROBLEM: the print area did not stick, it reads " & _
+                  ws.PageSetup.PrintArea & ". "
+        End If
+        Do While Right$(log, 2) = ", "
+            log = Left$(log, Len(log) - 2)
+        Loop
+        log = "page setup (" & log & ") "
+    End If
+
+    PageSetupOne = log
+End Function
+
+
+' Where the content on a sheet actually ends.
+'
+' Find with xlFormulas skips cells that hold nothing but formatting, which is
+' the whole point: the used range does not, and that is what puts a blank page
+' on the end of a revision page. Shapes are measured too, so a logo sitting
+' below the last row of text is not cut off by the print area.
+Private Function ContentRange(ByVal ws As Worksheet) As Range
+    Dim c As Range
+    Dim sh As Shape
+    Dim lastRow As Long, lastCol As Long
+
+    On Error Resume Next
+
+    Set c = ws.Cells.Find(What:="*", After:=ws.Cells(1, 1), LookIn:=xlFormulas, _
+                          LookAt:=xlPart, SearchOrder:=xlByRows, _
+                          SearchDirection:=xlPrevious)
+    If Not c Is Nothing Then lastRow = c.Row
+
+    Set c = ws.Cells.Find(What:="*", After:=ws.Cells(1, 1), LookIn:=xlFormulas, _
+                          LookAt:=xlPart, SearchOrder:=xlByColumns, _
+                          SearchDirection:=xlPrevious)
+    If Not c Is Nothing Then lastCol = c.Column
+
+    For Each sh In ws.Shapes
+        If sh.Visible Then
+            If sh.BottomRightCell.Row > lastRow Then lastRow = sh.BottomRightCell.Row
+            If sh.BottomRightCell.Column > lastCol Then lastCol = sh.BottomRightCell.Column
+        End If
+    Next sh
+
+    If Err.Number <> 0 Then Err.Clear
+    On Error GoTo 0
+
+    If lastRow < 1 Or lastCol < 1 Then Exit Function
+
+    Set ContentRange = ws.Range(ws.Cells(1, 1), ws.Cells(lastRow, lastCol))
+End Function
+
+
+' FitToPagesTall reads back as False for automatic and a number otherwise, so
+' the two cannot simply be compared.
+Private Function SameFit(ByVal got As Variant, ByVal wanted As Variant) As Boolean
+    If VarType(got) = vbBoolean Or VarType(wanted) = vbBoolean Then
+        SameFit = (VarType(got) = VarType(wanted))
+        If SameFit Then SameFit = (got = wanted)
+        Exit Function
+    End If
+    SameFit = (got = wanted)
 End Function
 
 

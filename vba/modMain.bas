@@ -21,10 +21,11 @@ Private Const R_OPT_FULL    As Long = 10
 Private Const R_OPT_HFSRC   As Long = 11
 Private Const R_OPT_HFIMG   As Long = 12
 Private Const R_OPT_HFSCALE As Long = 13
-Private Const R_OPT_SETUP   As Long = 14   ' read only
-Private Const R_OPT_LIST    As Long = 15   ' read only
-Private Const R_REV_FIRST   As Long = 18   ' Revision..Description = 18..24
-Private Const R_FLD_FIRST   As Long = 27   ' extra project fields
+Private Const R_OPT_PAGE    As Long = 14
+Private Const R_OPT_SETUP   As Long = 15   ' read only
+Private Const R_OPT_LIST    As Long = 16   ' read only
+Private Const R_REV_FIRST   As Long = 19   ' Revision..Description = 19..25
+Private Const R_FLD_FIRST   As Long = 28   ' extra project fields
 Private Const R_FLD_COUNT   As Long = 12
 
 ' Option rows are WRITTEN at the constants above but READ by these labels.
@@ -38,6 +39,7 @@ Private Const LBL_FULL    As String = "Full refresh every time"
 Private Const LBL_HFSRC   As String = "Reference schedule"
 Private Const LBL_HFIMG   As String = "Header image"
 Private Const LBL_HFSCALE As String = "Header image scale %"
+Private Const LBL_PAGE    As String = "Page setup on repair"
 Private Const LBL_SETUP   As String = "Last setup run"
 Private Const LBL_LIST    As String = "Last list refresh"
 
@@ -197,7 +199,8 @@ Public Sub SetupProject()
             On Error Resume Next
             oneLog = RepairWorkbook(wbTgt, ThisWorkbook.FullName, SH_SETUP, _
                                     projNameRef, projNoRef, clientRef, statuses, _
-                                    ProjectFields(wsSetup))
+                                    ProjectFields(wsSetup), _
+                                    UCase$(Trim$(CStr(Opt(wsSetup, LBL_PAGE, R_OPT_PAGE).Value))) <> "NO")
             If Err.Number <> 0 Then
                 LogLine fileName, "FAILED", "Error " & Err.Number & " - " & Err.Description
                 Err.Clear
@@ -761,7 +764,8 @@ Public Sub CopyCommonSheets()
                 ' Rebuild every link locally, so none point at the reference.
                 oneLog = oneLog & RepairWorkbook(wbTgt, ThisWorkbook.FullName, SH_SETUP, _
                                                  projNameRef, projNoRef, clientRef, statuses, _
-                                                 ProjectFields(wsSetup))
+                                                 ProjectFields(wsSetup), _
+                                                 UCase$(Trim$(CStr(Opt(wsSetup, LBL_PAGE, R_OPT_PAGE).Value))) <> "NO")
                 wbTgt.Close SaveChanges:=True
                 done = done + 1
                 LogLine fileName, "OK", oneLog
@@ -2167,8 +2171,8 @@ Private Sub BuildSetupSheet(ByVal ws As Worksheet)
     ' spacers, which squashed the suitability codes sharing those rows in F.
     ws.Rows(2).RowHeight = ws.StandardHeight
     ws.Rows(5).RowHeight = ws.StandardHeight
-    ws.Rows(16).RowHeight = ws.StandardHeight
-    ws.Rows(25).RowHeight = ws.StandardHeight
+    ws.Rows(17).RowHeight = ws.StandardHeight
+    ws.Rows(26).RowHeight = ws.StandardHeight
 
     ' --- Project -----------------------------------------------------------
     ' Rows 1, 3 and 4 are fixed. Schedules set up before now link to $B$1,
@@ -2190,6 +2194,7 @@ Private Sub BuildSetupSheet(ByVal ws As Worksheet)
     ws.Cells(R_OPT_HFSRC, 1).Value = "Reference schedule"
     ws.Cells(R_OPT_HFIMG, 1).Value = "Header image"
     ws.Cells(R_OPT_HFSCALE, 1).Value = "Header image scale %"
+    ws.Cells(R_OPT_PAGE, 1).Value = "Page setup on repair"
     ws.Cells(R_OPT_SETUP, 1).Value = "Last setup run"
     ws.Cells(R_OPT_LIST, 1).Value = "Last list refresh"
 
@@ -2200,6 +2205,7 @@ Private Sub BuildSetupSheet(ByVal ws As Worksheet)
     InputCell ws.Cells(R_OPT_HFSRC, 2)
     InputCell ws.Cells(R_OPT_HFIMG, 2)
     InputCell ws.Cells(R_OPT_HFSCALE, 2)
+    InputCell ws.Cells(R_OPT_PAGE, 2)
     ReadOnlyCell ws.Cells(R_OPT_SETUP, 2)
     ReadOnlyCell ws.Cells(R_OPT_LIST, 2)
 
@@ -2209,6 +2215,7 @@ Private Sub BuildSetupSheet(ByVal ws As Worksheet)
     NormaliseYesNo ws.Cells(R_OPT_BACKUP, 2), "Yes"
     NormaliseYesNo ws.Cells(R_OPT_AUTO, 2), "No"
     NormaliseYesNo ws.Cells(R_OPT_FULL, 2), "No"
+    NormaliseYesNo ws.Cells(R_OPT_PAGE, 2), "Yes"
 
     If IsNumeric(ws.Cells(R_OPT_HFSRC, 2).Value) Then ws.Cells(R_OPT_HFSRC, 2).ClearContents
     If Not IsNumeric(ws.Cells(R_OPT_HFSCALE, 2).Value) Then ws.Cells(R_OPT_HFSCALE, 2).Value = 20
@@ -2221,6 +2228,7 @@ Private Sub BuildSetupSheet(ByVal ws As Worksheet)
     YesNoList ws.Cells(R_OPT_BACKUP, 2)
     YesNoList ws.Cells(R_OPT_AUTO, 2)
     YesNoList ws.Cells(R_OPT_FULL, 2)
+    YesNoList ws.Cells(R_OPT_PAGE, 2)
 
     Note ws.Cells(R_OPT_FOLDER, 3), "blank = the folder this file is saved in"
     Note ws.Cells(R_OPT_BACKUP, 3), "copies every file into a timestamped folder first"
@@ -2229,6 +2237,7 @@ Private Sub BuildSetupSheet(ByVal ws As Worksheet)
     Note ws.Cells(R_OPT_HFSRC, 3), "the schedule that is set up correctly; used by both copy buttons"
     Note ws.Cells(R_OPT_HFIMG, 3), "logo for the top-right of the header; blank = ask, or leave for none"
     Note ws.Cells(R_OPT_HFSCALE, 3), "size of that logo as a percentage of the image's own size"
+    Note ws.Cells(R_OPT_PAGE, 3), "A4, one page wide, and a print area that stops at the content"
 
     ' --- New revision ------------------------------------------------------
     SectionHeader ws, R_REV_FIRST - 1, "NEW REVISION"

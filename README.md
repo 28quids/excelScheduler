@@ -51,7 +51,7 @@ If that number is not what you expect, the import did not take.
 One place, the declarations at the top of `vba/modUtil.bas`:
 
 ```vba
-Public Const TOOL_VERSION As String = "1.1"
+Public Const TOOL_VERSION As String = "1.2"
 ```
 
 That single constant feeds both the "Ready. Schedule tool version ..." box and
@@ -154,7 +154,8 @@ are reset to the default rather than left to be read wrong.
 | `B11` Reference schedule | the schedule that is set up correctly. Used by both copy buttons. Blank = the button asks, then fills this in |
 | `B12` Header image | logo for the top-right of the header. Blank = the button asks; decline and headers stay text only |
 | `B13` Header image scale % | that logo's size as a percentage of the image's own size. Default `20` |
-| `B14`, `B15` | when setup and the refresh last ran. Written by the tool, read only |
+| `B14` Page setup on repair | `Yes` / `No`. A4, one page wide, and a print area that stops at the content |
+| `B15`, `B16` | when setup and the refresh last ran. Written by the tool, read only |
 | `F1:F...` Suitability Codes | the dropdown pushed into every schedule's Metadata sheet and revision table. Seeded with the ISO 19650 codes below; edit here and re-run setup to push the change to all files |
 
 ## Headers and footers (security classification)
@@ -532,6 +533,43 @@ Only the title, the cell reading `SCHEDULE OF ...`, and only when it already
 matches the Revision Page title. If they disagree it is reported and left
 alone. Nothing else on a schedule sheet is ever touched: not a row, not a
 column, not a format.
+
+Page setup is the one exception, and it is not a cell: paper size, scaling and
+the print area are written on every sheet unless `Setup!B14` says `No`. See
+below.
+
+## Page setup
+
+**Set up / repair schedules** puts every sheet on **A4, one page wide, as many
+pages down as it needs**, and sets a **print area that stops where the content
+stops**. A front cover is the exception at one page tall, because that is what
+a cover is. Orientation is never touched: a schedule is landscape and a cover
+is portrait, and that is the sheet's business.
+
+Turn it off with `Setup!B14` if you would rather set page setup by hand.
+
+### Why the print area matters more than the scaling
+
+Excel prints its **used range**, and a cell counts as used when it carries
+nothing but a border or a fill. A revision page whose values end at row 41 but
+whose formatting runs to row 98 therefore prints **a second, blank page**, and
+that is where the mystery blank page in a PDF comes from.
+
+On a sheet set to fit one page tall the same defect does something quieter and
+worse: rather than adding a page, Excel **shrinks everything** to squeeze the
+empty rows on, which is how a front cover ends up rendered at 47%.
+
+Setting fit-to-width alone fixes neither. The print area is what fixes both,
+and the covers get noticeably bigger the first time you re-run setup.
+
+The content edge is found by searching for cells that hold a value or a
+formula, so formatting-only cells are ignored, and shapes are measured too so
+a logo below the last row of text is not clipped.
+
+**One caveat.** The print area is stored, so if you add rows to a schedule
+below it, they will not print until setup is run again. Re-running is the
+normal way to work with this tool and it is idempotent, so make it a habit
+before an issue. Every change is named on the Log sheet.
 
 ## Running from Filery / SharePoint
 
