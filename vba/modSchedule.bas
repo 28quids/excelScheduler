@@ -17,6 +17,10 @@ Option Explicit
 ' the ScheduleList reads back, so do not rename them casually.
 Private Const META_LAST_ROW As Long = 14
 
+' Windows refuses a path longer than this, and a half-written PDF is worse
+' than a refusal, so a name that would go over is reported instead.
+Private Const MAX_PDF_PATH As Long = 255
+
 ' Revision Page cells that are typed per document and must not be inherited
 ' when the common sheets are copied from a reference schedule.
 Private Const KEEP_LABELS As String = _
@@ -1775,4 +1779,236 @@ Private Function HideMetadata(ByVal wb As Workbook) As String
 
 Failed:
     HideMetadata = "PROBLEM: could not set sheet visibility - " & Err.Description & ". "
+End Function
+
+
+' ===========================================================================
+' Exporting to PDF
+'
+' The workbook is opened and closed by the caller; nothing here writes to it.
+' Selecting sheets does mark it as changed, which is why the caller closes
+' with SaveChanges:=False.
+' ===========================================================================
+
+' Returns the note for the log. A note containing "PROBLEM:" is a failure.
+' `made` is raised by one for every PDF actually written, which is how the
+' caller tells an export from a workbook that had nothing to give.
+Public Function ExportWorkbookToPdf(ByVal wb As Workbook, ByVal outFolder As String, _
+                                    ByVal perSheet As Boolean, ByVal overwrite As Boolean, _
+                                    ByRef made As Long) As String
+    Dim sheetList As Collection
+    Dim stem As String, outPath As String
+    Dim res As String, notes As String
+    Dim madeHere As Long, skippedExisting As Long
+    Dim i As Long
+
+    Set sheetList = PrintableSheets(wb)
+    If sheetList.Count = 0 Then Exit Function
+
+    stem = NameWithoutExtension(wb.Name)
+
+    If Not LooksLikeSchedule(wb) Then notes = "No Revision Page, exported anyway. "
+
+    If perSheet Then
+        For i = 1 To sheetList.Count
+            outPath = EndSep(outFolder) & SafeName(stem & " - " & sheetList(i)) & ".pdf"
+            If FileExists(outPath) And Not overwrite Then
+                skippedExisting = skippedExisting + 1
+            Else
+                res = WritePdf(wb, Array(sheetList(i)), outPath)
+                If Len(res) > 0 Then
+                    ExportWorkbookToPdf = notes & res
+                    Exit Function
+                End If
+                made = made + 1
+                madeHere = madeHere + 1
+            End If
+        Next i
+
+        If madeHere > 0 Then notes = notes & madeHere & " sheet(s) exported. "
+        If skippedExisting > 0 Then
+            notes = notes & skippedExisting & " sheet(s) already had a PDF and were skipped. "
+        End If
+    Else
+        outPath = EndSep(outFolder) & SafeName(stem) & ".pdf"
+        If FileExists(outPath) And Not overwrite Then
+            ExportWorkbookToPdf = notes & "A PDF of that name is already there. "
+            Exit Function
+        End If
+
+        If CoversAllVisible(wb, sheetList) Then
+            res = WritePdf(wb, Empty, outPath)
+        Else
+            res = WritePdf(wb, ToArray(sheetList), outPath)
+        End If
+        If Len(res) > 0 Then
+            ExportWorkbookToPdf = notes & res
+            Exit Function
+        End If
+        made = made + 1
+        notes = notes & sheetList.Count & " sheet(s): " & JoinCollection(sheetList, ", ") & ". "
+    End If
+
+    ExportWorkbookToPdf = notes
+End Function
+
+
+' The sheets worth printing, in tab order.
+'
+' Metadata is working data, never issued, so it is left out by name as well as
+' by being hidden: a workbook that has not been through Tidy sheets may still
+' have it visible.
+Private Function PrintableSheets(ByVal wb As Workbook) As Collection
+    Dim c As New Collection
+    Dim ws As Worksheet
+
+    Set PrintableSheets = c
+    For Each ws In wb.Worksheets
+        If ws.Visible = xlSheetVisible Then
+            If LCase$(Trim$(ws.Name)) <> LCase$(SH_META) Then
+                If HasSomethingToPrint(ws) Then c.Add ws.Name
+            End If
+        End If
+    Next ws
+End Function
+
+
+' An empty sheet in the selection fails the whole export, so they are filtered
+' out rather than left to break a file that would otherwise have been fine.
+Private Function HasSomethingToPrint(ByVal ws As Worksheet) As Boolean
+    Dim pa As String
+
+    On Error Resume Next
+    pa = ws.PageSetup.PrintArea
+    If Err.Number <> 0 Then Err.Clear
+    On Error GoTo 0
+
+    If Len(pa) > 0 Then
+        HasSomethingToPrint = True
+        Exit Function
+    End If
+
+    If ws.Shapes.Count > 0 Then
+        HasSomethingToPrint = True
+        Exit Function
+    End If
+
+    On Error Resume Next
+    HasSomethingToPrint = (Application.WorksheetFunction.CountA(ws.UsedRange) > 0)
+    If Err.Number <> 0 Then Err.Clear
+    On Error GoTo 0
+End Function
+
+
+' Writes one PDF. `sheetNames` is a 0-based array of names, or Empty for the
+' whole workbook. Returns "" on success, otherwise a note beginning "PROBLEM:".
+'
+' ExportAsFixedFormat is a method of a Workbook, a Worksheet or a Chart. It is
+' NOT a method of the Sheets collection, so ActiveWindow.SelectedSheets.Export...
+' does not even compile. Several sheets as one document is done the way the
+' Publish dialog does it: select them, then export the ACTIVE SHEET, which
+' means "active sheet(s)" and takes the whole selected group with continuous
+' page numbers.
+Private Function WritePdf(ByVal wb As Workbook, ByVal sheetNames As Variant, _
+                          ByVal outPath As String) As String
+    Dim source As Object
+
+    If Len(outPath) > MAX_PDF_PATH Then
+        WritePdf = "PROBLEM: the PDF path would be " & Len(outPath) & " characters, " & _
+                   "which is longer than Windows allows. Export to a folder nearer " & _
+                   "the top of the drive. "
+        Exit Function
+    End If
+
+    ' Excel will not overwrite a file carrying the read-only attribute, and
+    ' fails with "Document not saved" rather than saying so. By the time this
+    ' is called the caller has decided the file is to be replaced.
+    WritePdf = ClearTarget(outPath)
+    If Len(WritePdf) > 0 Then Exit Function
+
+    On Error Resume Next
+
+    If IsEmpty(sheetNames) Then
+        Set source = wb
+    Else
+        wb.Activate
+        wb.Worksheets(sheetNames).Select
+        If Err.Number <> 0 Then
+            WritePdf = "PROBLEM: could not select the sheets - " & Err.Description & ". "
+            Err.Clear
+            Exit Function
+        End If
+        ' Late bound on purpose: ActiveSheet is a Worksheet here and a Workbook
+        ' above, and both carry ExportAsFixedFormat with the same arguments.
+        Set source = wb.ActiveSheet
+    End If
+
+    source.ExportAsFixedFormat _
+        Type:=xlTypePDF, fileName:=outPath, Quality:=xlQualityStandard, _
+        IncludeDocProperties:=True, IgnorePrintAreas:=False, OpenAfterPublish:=False
+    If Err.Number <> 0 Then
+        WritePdf = "PROBLEM: " & PdfErrorText(Err.Number, Err.Description) & " "
+        Err.Clear
+        Exit Function
+    End If
+
+    On Error GoTo 0
+
+    ' Excel can report success on an export that produced no file at all, so
+    ' the result is checked rather than assumed. Same reason the header and
+    ' footer writes are read back.
+    If Not FileExists(outPath) Then
+        WritePdf = "PROBLEM: Excel reported success but no file appeared at " & outPath & ". "
+    End If
+End Function
+
+
+' Deletes an existing PDF so the export can write in its place, clearing the
+' read-only attribute if it has one. Returns "" when the path is free.
+Private Function ClearTarget(ByVal outPath As String) As String
+    Dim f As Object
+
+    If Not FileExists(outPath) Then Exit Function
+
+    On Error Resume Next
+    Set f = Fso.GetFile(outPath)
+    If (f.Attributes And 1) = 1 Then f.Attributes = f.Attributes - 1
+    f.Delete True
+    If Err.Number <> 0 Then Err.Clear
+    On Error GoTo 0
+
+    If FileExists(outPath) Then
+        ClearTarget = "PROBLEM: the PDF already there could not be replaced. It is " & _
+                      "open in a viewer, locked by the Explorer preview pane, or " & _
+                      "read only: " & outPath & " "
+    End If
+End Function
+
+
+' True when the wanted sheets are simply everything visible in the workbook,
+' charts included, in which case the workbook can be exported as it stands.
+Private Function CoversAllVisible(ByVal wb As Workbook, ByVal wanted As Collection) As Boolean
+    Dim sh As Object
+    Dim shown As Long
+
+    For Each sh In wb.Sheets
+        If sh.Visible = xlSheetVisible Then shown = shown + 1
+    Next sh
+
+    CoversAllVisible = (shown = wanted.Count)
+End Function
+
+
+' The errors this actually throws in practice, said in English.
+Private Function PdfErrorText(ByVal errNo As Long, ByVal errText As String) As String
+    Select Case errNo
+        Case -2147018887          ' 0x80071779, Win32 6009: the file is read only
+            PdfErrorText = "Excel would not write the PDF because a read only file " & _
+                           "is in the way, or the destination folder is read only."
+        Case 1004, 70
+            PdfErrorText = "could not write the PDF (error " & errNo & "). It is " & _
+                           "usually open in a PDF reader, or the folder is read only."
+        Case Else
+            PdfErrorText = "error " & errNo & " - " & errText & "."
+    End Select
 End Function

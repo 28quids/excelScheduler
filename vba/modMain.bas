@@ -59,6 +59,9 @@ Private Const C_STAMP     As Long = 25     ' hidden, file modified time
 Private Const C_FILECHK   As Long = 26     ' hidden, checks that come from the file itself
 Private Const REV_FIELDS  As Long = 7      ' Rev, Status, Date, Pr, Ch, Ap, Descr
 
+' Where the PDFs go by default, inside the folder the schedules came from.
+Private Const PDF_SUBFOLDER As String = "_pdf"
+
 ' How many runs the Log sheet keeps. Every button finishes by refreshing the
 ' list, so a log that held one run only ever showed the refresh.
 Private Const LOG_RUNS As Long = 5
@@ -1282,6 +1285,258 @@ Fail:
 End Sub
 
 
+' ===========================================================================
+' Button 8 - write a PDF of each schedule
+'
+' Unlike every other button this one only reads. It takes the schedules in the
+' folder or the ones you pick, and writes one PDF per workbook covering every
+' sheet in it, or one per sheet.
+' ===========================================================================
+Public Sub ExportToPdf()
+    Dim files As Collection
+    Dim outFolder As String, clash As String
+    Dim perSheet As Boolean, overwrite As Boolean
+    Dim i As Long
+    Dim fullPath As String, fileName As String
+    Dim wbTgt As Workbook
+    Dim notes As String
+    Dim made As Long, madeBefore As Long
+    Dim done As Long, skipped As Long, failed As Long
+    Dim started As Double
+
+    Set files = ChooseFilesToExport()
+    If files Is Nothing Then Exit Sub          ' cancelled
+    If files.Count = 0 Then
+        MsgBox "No Excel files to export.", vbInformation, "Export to PDF"
+        Exit Sub
+    End If
+
+    ' Found before anything is written, the way the rename button checks its
+    ' whole batch first. Two files of the same name from different folders
+    ' produce one PDF, and the second run over it would look like it worked.
+    clash = DuplicateName(files)
+    If Len(clash) > 0 Then
+        MsgBox "Two of the files chosen are both called:" & vbCrLf & vbCrLf & clash & _
+               vbCrLf & vbCrLf & "They would write the same PDF, so the second would " & _
+               "quietly replace the first. Export them in separate runs, or into " & _
+               "different folders.", vbExclamation, "Export to PDF"
+        Exit Sub
+    End If
+
+    outFolder = ChoosePdfFolder(FolderOf(files(1)))
+    If Len(outFolder) = 0 Then Exit Sub
+
+    If Not AskPdfLayout(perSheet) Then Exit Sub
+    If Not AskPdfOverwrite(outFolder, overwrite) Then Exit Sub
+
+    If MsgBox(files.Count & " workbook(s) will be exported to:" & vbCrLf & vbCrLf & _
+              outFolder & vbCrLf & vbCrLf & _
+              IIf(perSheet, "One PDF per sheet.", _
+                            "One PDF per workbook, every sheet in tab order.") & vbCrLf & _
+              IIf(overwrite, "PDFs that already exist are overwritten.", _
+                             "PDFs that already exist are left alone.") & vbCrLf & vbCrLf & _
+              "Each workbook is opened read only, with its links updated and " & _
+              "recalculated, so the PDF matches what you see on screen. Nothing is " & _
+              "written back to any schedule." & vbCrLf & vbCrLf & _
+              "Continue?", vbQuestion + vbYesNo, "Export to PDF") = vbNo Then Exit Sub
+
+    On Error GoTo Fail
+    LogStart "Export to PDF"
+    ' Events stay on and calculation stays automatic. See BeginQuiet.
+    BeginQuiet xlCalculationAutomatic, keepEvents:=True
+    ProgressStart files.Count, "Exporting to PDF"
+    started = Timer
+
+    For i = 1 To files.Count
+        fullPath = files(i)
+        fileName = BaseName(fullPath)
+        ProgressStep i - 1, fileName
+
+        If IsWorkbookOpen(fileName) Then
+            ' Opening it again hands back the copy that is already open, and
+            ' closing that would throw away whatever is unsaved in it.
+            skipped = skipped + 1
+            LogLine fileName, "Skipped", "Already open in Excel. Close it and run again."
+        Else
+            Set wbTgt = OpenQuiet(fullPath, True, 3)
+            If wbTgt Is Nothing Then
+                failed = failed + 1
+                LogLine fileName, "FAILED", "Could not open the file."
+            Else
+                madeBefore = made
+                notes = ExportWorkbookToPdf(wbTgt, outFolder, perSheet, overwrite, made)
+                wbTgt.Close SaveChanges:=False
+                Set wbTgt = Nothing
+
+                If InStr(1, notes, "PROBLEM:", vbTextCompare) > 0 Then
+                    failed = failed + 1
+                    LogLine fileName, "FAILED", notes
+                ElseIf made = madeBefore Then
+                    skipped = skipped + 1
+                    LogLine fileName, "Skipped", IIf(Len(notes) > 0, notes, _
+                                                    "No sheet in it had anything to print.")
+                Else
+                    done = done + 1
+                    LogLine fileName, "OK", notes
+                End If
+            End If
+        End If
+    Next i
+
+    ProgressDone
+    EndQuiet
+
+    ShowSummary "Export to PDF", done, skipped, failed, Timer - started, _
+                made & " PDF(s) written to " & outFolder
+    Exit Sub
+
+Fail:
+    Recover "Export to PDF", wbTgt
+End Sub
+
+
+' Full paths of the workbooks to export. Nothing means the user backed out,
+' an empty collection means they chose a folder with nothing in it.
+Private Function ChooseFilesToExport() As Collection
+    Dim answer As VbMsgBoxResult
+    Dim folderPath As String
+    Dim names As Collection
+    Dim c As New Collection
+    Dim i As Long
+
+    answer = MsgBox("Which schedules do you want as PDFs?" & vbCrLf & vbCrLf & _
+                    "Yes  - every workbook in a folder" & vbCrLf & _
+                    "No   - pick the files yourself" & vbCrLf & _
+                    "Cancel - stop", vbQuestion + vbYesNoCancel, "Export to PDF")
+    If answer = vbCancel Then Exit Function
+
+    If answer = vbNo Then
+        Set ChooseFilesToExport = PickWorkbooks( _
+            "Schedules to export (Ctrl or Shift to pick several)", SchedulesFolder(False))
+        Exit Function
+    End If
+
+    ' Default to the project folder, but let them point somewhere else.
+    folderPath = PickFolder("Folder holding the schedules to export")
+    If Len(folderPath) = 0 Then Exit Function
+
+    If Not FolderExists(folderPath) Then
+        MsgBox "That folder cannot be read from Excel:" & vbCrLf & vbCrLf & folderPath & _
+               vbCrLf & vbCrLf & "Pick it from the synced folder in File Explorer " & _
+               "rather than from Filery or SharePoint in a browser.", _
+               vbExclamation, "Export to PDF"
+        Exit Function
+    End If
+
+    Set names = FolderWorkbooks(folderPath)
+    For i = 1 To names.Count
+        If StrComp(names(i), ThisWorkbook.Name, vbTextCompare) <> 0 Then
+            c.Add EndSep(folderPath) & names(i)
+        End If
+    Next i
+    Set ChooseFilesToExport = c
+End Function
+
+
+' "" means the user backed out.
+Private Function ChoosePdfFolder(ByVal sourceFolder As String) As String
+    Dim suggested As String
+    Dim answer As VbMsgBoxResult
+    Dim picked As String
+
+    If FolderExists(sourceFolder) Then suggested = EndSep(sourceFolder) & PDF_SUBFOLDER
+
+    If Len(suggested) > 0 Then
+        answer = MsgBox("Where should the PDFs go?" & vbCrLf & vbCrLf & _
+                        "Yes  - " & suggested & vbCrLf & _
+                        "No   - somewhere else" & vbCrLf & _
+                        "Cancel - stop", vbQuestion + vbYesNoCancel, "Export to PDF")
+        If answer = vbCancel Then Exit Function
+
+        If answer = vbYes Then
+            If Not FolderExists(suggested) Then
+                On Error Resume Next
+                MkDir suggested
+                On Error GoTo 0
+            End If
+            If Not FolderExists(suggested) Then
+                MsgBox "Could not create:" & vbCrLf & vbCrLf & suggested, _
+                       vbExclamation, "Export to PDF"
+                Exit Function
+            End If
+            ChoosePdfFolder = EndSep(suggested)
+            Exit Function
+        End If
+    End If
+
+    picked = PickFolder("Where to put the PDFs")
+    If Len(picked) = 0 Then Exit Function
+
+    If Not FolderExists(picked) Then
+        MsgBox "Excel cannot write to that folder:" & vbCrLf & vbCrLf & picked & _
+               vbCrLf & vbCrLf & "Pick a folder on this PC, or the synced copy of " & _
+               "the Filery one.", vbExclamation, "Export to PDF"
+        Exit Function
+    End If
+
+    ChoosePdfFolder = EndSep(picked)
+End Function
+
+
+Private Function AskPdfLayout(ByRef perSheet As Boolean) As Boolean
+    Dim answer As VbMsgBoxResult
+
+    answer = MsgBox("One PDF per workbook, or one per sheet?" & vbCrLf & vbCrLf & _
+                    "Yes  - one PDF per workbook, every sheet in it, in tab order" & vbCrLf & _
+                    "No   - one PDF per sheet" & vbCrLf & _
+                    "Cancel - stop" & vbCrLf & vbCrLf & _
+                    "One per workbook is the usual answer: cover, revision page and " & _
+                    "schedule come out as one document with continuous page numbers.", _
+                    vbQuestion + vbYesNoCancel, "Export to PDF")
+    If answer = vbCancel Then Exit Function
+
+    perSheet = (answer = vbNo)
+    AskPdfLayout = True
+End Function
+
+
+' Only worth asking when the destination already holds PDFs.
+Private Function AskPdfOverwrite(ByVal outFolder As String, ByRef overwrite As Boolean) As Boolean
+    Dim answer As VbMsgBoxResult
+
+    If Not FolderHasPdfs(outFolder) Then
+        overwrite = True
+        AskPdfOverwrite = True
+        Exit Function
+    End If
+
+    answer = MsgBox("There are already PDFs in:" & vbCrLf & vbCrLf & outFolder & vbCrLf & vbCrLf & _
+                    "Yes  - overwrite the ones this run produces" & vbCrLf & _
+                    "No   - leave those alone and skip them" & vbCrLf & _
+                    "Cancel - stop", vbQuestion + vbYesNoCancel, "Export to PDF")
+    If answer = vbCancel Then Exit Function
+
+    overwrite = (answer = vbYes)
+    AskPdfOverwrite = True
+End Function
+
+
+Private Function FolderHasPdfs(ByVal folderPath As String) As Boolean
+    Dim f As Object
+
+    If Not FolderExists(folderPath) Then Exit Function
+
+    On Error Resume Next
+    For Each f In Fso.GetFolder(folderPath).files
+        If LCase$(Fso.GetExtensionName(f.Name)) = "pdf" Then
+            FolderHasPdfs = True
+            Exit For
+        End If
+    Next f
+    On Error GoTo 0
+End Function
+
+
 Public Sub Auto_Open()
     Dim wsSetup As Worksheet
     Set wsSetup = GetSheet(ThisWorkbook, SH_SETUP)
@@ -1658,10 +1913,14 @@ End Sub
 
 ' Opens a workbook without link prompts, and re-asserts the quiet settings
 ' afterwards because opening a file can turn screen updating back on.
-Private Function OpenQuiet(ByVal fullPath As String, ByVal readOnlyMode As Boolean) As Workbook
+' updateLinks stays 0 for every button that edits a schedule: those read what
+' is saved in the file. The PDF export passes 3, because a document you issue
+' has to match what you see on screen.
+Private Function OpenQuiet(ByVal fullPath As String, ByVal readOnlyMode As Boolean, _
+                           Optional ByVal updateLinks As Long = 0) As Workbook
     Dim wb As Workbook
     On Error Resume Next
-    Set wb = Workbooks.Open(fileName:=fullPath, ReadOnly:=readOnlyMode, UpdateLinks:=0)
+    Set wb = Workbooks.Open(fileName:=fullPath, ReadOnly:=readOnlyMode, UpdateLinks:=updateLinks)
     If Err.Number <> 0 Then Err.Clear
     On Error GoTo 0
     Application.ScreenUpdating = False
@@ -2009,7 +2268,8 @@ Private Sub BuildSetupSheet(ByVal ws As Worksheet)
     Note ws.Range("H22"), "Changed the cover or revision page layout itself? 'Copy cover && revision page'"
     Note ws.Range("H23"), "'Rename files' fills the New FileName column first so you can read it, then renames."
     Note ws.Range("H24"), "'Tidy sheets' orders every workbook the same way and hides Metadata. No cell is touched."
-    Note ws.Range("H25"), "Schedule tool version " & TOOL_VERSION
+    Note ws.Range("H25"), "'Export to PDF' reads only: pick a folder or the files, and it writes one PDF per workbook."
+    Note ws.Range("H26"), "Schedule tool version " & TOOL_VERSION
 
     ' --- Layout ------------------------------------------------------------
     ws.Columns("A").ColumnWidth = 24
@@ -2267,6 +2527,7 @@ Private Sub BuildButtons(ByVal ws As Worksheet)
     AddButton ws, leftCol + 210, topRow, "CopyHeadersFooters", "Copy headers && footers"
     AddButton ws, leftCol + 210, topRow + 36, "CopyCommonSheets", "Copy cover && revision page"
     AddButton ws, leftCol + 210, topRow + 72, "RenameFiles", "Rename files"
+    AddButton ws, leftCol + 210, topRow + 108, "ExportToPdf", "Export to PDF"
 End Sub
 
 
@@ -2300,10 +2561,15 @@ Private Sub Recover(ByVal what As String, ByRef wbTgt As Workbook)
 End Sub
 
 
-Private Sub BeginQuiet(ByVal calcMode As XlCalculation)
+' keepEvents is for the PDF export. A schedule opened with events off, under
+' manual calculation and with screen updating off, exports with a line struck
+' through every calculated value; the same file exported by hand is clean.
+' Each of those settings is harmless on its own, the combination is not.
+Private Sub BeginQuiet(ByVal calcMode As XlCalculation, _
+                       Optional ByVal keepEvents As Boolean = False)
     Application.ScreenUpdating = False
     Application.DisplayAlerts = False
-    Application.EnableEvents = False
+    If Not keepEvents Then Application.EnableEvents = False
     Application.AskToUpdateLinks = False
     Application.Calculation = calcMode
 End Sub
