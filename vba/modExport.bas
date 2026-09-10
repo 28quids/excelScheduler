@@ -353,7 +353,11 @@ Private Function ExportWorkbook(ByVal wb As Workbook, ByVal outFolder As String,
             Exit Function
         End If
 
-        res = WritePdf(wb, ToArray(sheetList), outPath)
+        If CoversAllVisible(wb, sheetList) Then
+            res = WritePdf(wb, Empty, outPath)
+        Else
+            res = WritePdf(wb, ToArray(sheetList), outPath)
+        End If
         If Len(res) > 0 Then
             ExportWorkbook = notes & res
             Exit Function
@@ -413,16 +417,26 @@ Private Function HasSomethingToPrint(ByVal ws As Worksheet) As Boolean
 End Function
 
 
-' Writes one PDF from the named sheets. Returns "" on success, otherwise a
-' note beginning "PROBLEM:".
+' Writes one PDF. `sheetNames` is a 0-based array of names, or Empty for the
+' whole workbook. Returns "" on success, otherwise a note beginning "PROBLEM:".
 '
-' The sheets have to be selected because only a selection exports as a single
-' document with continuous page numbers; exporting the workbook object would
-' take whatever Excel thinks is printable rather than the list worked out
-' above. Selecting marks the workbook as changed, which is why every caller
-' closes it with SaveChanges:=False.
+' ExportAsFixedFormat is a method of a Workbook, a Worksheet or a Chart. It is
+' NOT a method of the Sheets collection, so ActiveWindow.SelectedSheets.Export...
+' does not even compile ("method or data member not found"). Exporting several
+' sheets as one document is done the way the Publish dialog does it: select
+' them, then export the ACTIVE SHEET, which means "active sheet(s)" and takes
+' the whole selected group with continuous page numbers.
+'
+' When the wanted sheets are every visible sheet there is, the workbook itself
+' is exported instead. That is the same PDF without touching the selection at
+' all, which is worth having as the path the tidy schedules take.
+'
+' Selecting marks the workbook as changed, which is why every caller closes it
+' with SaveChanges:=False.
 Private Function WritePdf(ByVal wb As Workbook, ByVal sheetNames As Variant, _
                           ByVal outPath As String) As String
+    Dim source As Object
+
     If Len(outPath) > MAX_PATH_LEN Then
         WritePdf = "PROBLEM: the PDF path would be " & Len(outPath) & " characters, " & _
                    "which is longer than Windows allows. Export to a folder nearer " & _
@@ -432,15 +446,22 @@ Private Function WritePdf(ByVal wb As Workbook, ByVal sheetNames As Variant, _
 
     On Error Resume Next
 
-    wb.Activate
-    wb.Worksheets(sheetNames).Select
-    If Err.Number <> 0 Then
-        WritePdf = "PROBLEM: could not select the sheets - " & Err.Description & ". "
-        Err.Clear
-        Exit Function
+    If IsEmpty(sheetNames) Then
+        Set source = wb
+    Else
+        wb.Activate
+        wb.Worksheets(sheetNames).Select
+        If Err.Number <> 0 Then
+            WritePdf = "PROBLEM: could not select the sheets - " & Err.Description & ". "
+            Err.Clear
+            Exit Function
+        End If
+        ' Late bound on purpose: ActiveSheet is a Worksheet here and a Workbook
+        ' above, and both carry ExportAsFixedFormat with the same arguments.
+        Set source = wb.ActiveSheet
     End If
 
-    ActiveWindow.SelectedSheets.ExportAsFixedFormat _
+    source.ExportAsFixedFormat _
         Type:=xlTypePDF, fileName:=outPath, Quality:=xlQualityStandard, _
         IncludeDocProperties:=True, IgnorePrintAreas:=False, OpenAfterPublish:=False
     If Err.Number <> 0 Then
@@ -452,11 +473,25 @@ Private Function WritePdf(ByVal wb As Workbook, ByVal sheetNames As Variant, _
     On Error GoTo 0
 
     ' Excel can report success on an export that produced no file at all, so
-    ' the result is checked rather than assumed. This is the same reason the
-    ' header and footer writes are read back.
+    ' the result is checked rather than assumed. Same reason the header and
+    ' footer writes are read back.
     If Not FileExists(outPath) Then
         WritePdf = "PROBLEM: Excel reported success but no file appeared at " & outPath & ". "
     End If
+End Function
+
+
+' True when the wanted sheets are simply everything visible in the workbook,
+' charts included, in which case the workbook can be exported as it stands.
+Private Function CoversAllVisible(ByVal wb As Workbook, ByVal wanted As Collection) As Boolean
+    Dim sh As Object
+    Dim shown As Long
+
+    For Each sh In wb.Sheets
+        If sh.Visible = xlSheetVisible Then shown = shown + 1
+    Next sh
+
+    CoversAllVisible = (shown = wanted.Count)
 End Function
 
 
