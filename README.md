@@ -51,7 +51,7 @@ If that number is not what you expect, the import did not take.
 One place, the declarations at the top of `vba/modUtil.bas`:
 
 ```vba
-Public Const TOOL_VERSION As String = "1.2"
+Public Const TOOL_VERSION As String = "1.0"
 ```
 
 That single constant feeds both the "Ready. Schedule tool version ..." box and
@@ -540,36 +540,47 @@ below.
 
 ## Page setup
 
-**Set up / repair schedules** puts every sheet on **A4, one page wide, as many
-pages down as it needs**, and sets a **print area that stops where the content
-stops**. A front cover is the exception at one page tall, because that is what
-a cover is. Orientation is never touched: a schedule is landscape and a cover
-is portrait, and that is the sheet's business.
+**Set up / repair schedules** puts every sheet on A4 and one page wide:
 
-Turn it off with `Setup!B14` if you would rather set page setup by hand.
+| Sheet | Pages |
+|---|---|
+| Front Cover | 1 wide, 1 tall |
+| Revision Page | 1 wide, 1 tall |
+| Schedule, and anything else | 1 wide, as many pages down as it needs |
 
-### Why the print area matters more than the scaling
+The two fixed-length sheets are one page because that is what they are. A
+schedule is however long it is.
+
+Orientation is never touched: a schedule is landscape and a cover is portrait,
+and that is the sheet's business. Turn the whole step off with `Setup!B14` if
+you would rather set page setup by hand.
+
+### The print area is cleared, not set
+
+Deliberately. A stored print area goes stale the moment somebody adds a row
+below it, and a schedule that silently stops printing half its rows is far
+worse than one that prints a spare page. Fitting to one page tall makes a
+print area pointless on the first two sheets anyway, and on a schedule every
+row has to print by definition. So nothing needs re-running to stay correct.
+
+### Why a PDF sometimes has a blank page
 
 Excel prints its **used range**, and a cell counts as used when it carries
 nothing but a border or a fill. A revision page whose values end at row 41 but
-whose formatting runs to row 98 therefore prints **a second, blank page**, and
-that is where the mystery blank page in a PDF comes from.
+whose formatting runs to row 98 prints **a second, blank page**. That is where
+a mystery blank page in an export comes from, and it is in the file rather
+than in whatever produced the PDF.
 
-On a sheet set to fit one page tall the same defect does something quieter and
-worse: rather than adding a page, Excel **shrinks everything** to squeeze the
-empty rows on, which is how a front cover ends up rendered at 47%.
+Setting that sheet to one page tall, as the tool now does, ends the blank page:
+Excel fits everything onto the single page instead of running on. The cost is
+that it is fitting the empty rows too, so the sheet scales smaller than it
+needs to. A front cover carrying formatting down to row 96 lands around 47%.
 
-Setting fit-to-width alone fixes neither. The print area is what fixes both,
-and the covers get noticeably bigger the first time you re-run setup.
-
-The content edge is found by searching for cells that hold a value or a
-formula, so formatting-only cells are ignored, and shapes are measured too so
-a logo below the last row of text is not clipped.
-
-**One caveat.** The print area is stored, so if you add rows to a schedule
-below it, they will not print until setup is run again. Re-running is the
-normal way to work with this tool and it is idempotent, so make it a habit
-before an issue. Every change is named on the Log sheet.
+If you want the scale back, the fix is to delete the empty rows below the
+content on that sheet once, by hand: select the first empty row under the last
+real content, `Ctrl+Shift+Down`, delete rows, save. The tool does not do this
+for you, because clearing rows on a live document is not something to do behind
+someone's back.
 
 ## Running from Filery / SharePoint
 

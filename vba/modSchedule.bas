@@ -1789,18 +1789,22 @@ End Function
 ' ===========================================================================
 ' Page setup
 '
-' Every sheet: A4, one page wide, as many pages down as it needs, and a print
-' area that stops where the content stops.
+'   Front Cover     A4, one page wide, one page tall
+'   Revision Page   A4, one page wide, one page tall
+'   anything else   A4, one page wide, as many pages down as it needs
 '
-' That last part is the one that matters. Excel prints its used range, which
-' counts a cell that carries only a border or a fill, so a sheet whose values
-' end at row 41 but whose formatting runs to row 98 prints a second, blank
-' page. On a sheet set to fit one page tall it does something worse and
-' quieter: it shrinks everything to squeeze the empty rows in, which is why
-' covers come out at 47%.
+' The two fixed-length sheets are one page because that is what they are. A
+' schedule is however long it is.
 '
-' Orientation is deliberately not touched. A schedule is landscape and a cover
-' is portrait, and that is the sheet's business.
+' The print area is deliberately CLEARED rather than set. A stored print area
+' goes stale the moment somebody adds a row below it, and a schedule that
+' silently stops printing half its rows is far worse than one that prints a
+' spare page. Fitting to one page tall makes a print area pointless on the
+' first two sheets anyway, and on a schedule every row has to print by
+' definition.
+'
+' Orientation is not touched. A schedule is landscape and a cover is portrait,
+' and that is the sheet's business.
 '
 ' No PrintCommunication = False here. It queues page setup writes rather than
 ' applying them and they can be dropped silently, which is exactly the bug
@@ -1825,23 +1829,15 @@ End Function
 
 ' Returns what changed on one sheet, "" if it was already right.
 Private Function PageSetupOne(ByVal ws As Worksheet) As String
-    Dim rng As Range
-    Dim wantArea As String
     Dim tall As Variant
     Dim log As String
 
-    Set rng = ContentRange(ws)
-    If rng Is Nothing Then Exit Function        ' nothing on it, leave it alone
-
-    wantArea = rng.Address(True, True, xlA1)
-
-    ' A front cover is one page by definition. Everything else runs on down as
-    ' far as it needs to, which is what a schedule of unknown length wants.
-    If LCase$(Trim$(ws.Name)) = LCase$(SH_FRONT) Then
-        tall = 1
-    Else
-        tall = False
-    End If
+    Select Case LCase$(Trim$(ws.Name))
+        Case LCase$(SH_FRONT), LCase$(SH_REV)
+            tall = 1
+        Case Else
+            tall = False              ' automatic, as many pages as it takes
+    End Select
 
     On Error Resume Next
 
@@ -1865,9 +1861,9 @@ Private Function PageSetupOne(ByVal ws As Worksheet) As String
             log = log & IIf(tall = 1, "1 page tall, ", "pages down as needed, ")
         End If
 
-        If StrComp(.PrintArea, wantArea, vbTextCompare) <> 0 Then
-            .PrintArea = wantArea
-            log = log & "print area " & wantArea & ", "
+        If Len(.PrintArea) > 0 Then
+            .PrintArea = ""
+            log = log & "print area cleared, "
         End If
     End With
 
@@ -1878,59 +1874,20 @@ Private Function PageSetupOne(ByVal ws As Worksheet) As String
 
     On Error GoTo 0
 
+    If Len(log) = 0 Then Exit Function
+
     ' Written and read back, the way the header and footer writes are, because
     ' page setup is one of the few things Excel will accept and then ignore.
-    If Len(log) > 0 Then
-        If StrComp(ws.PageSetup.PrintArea, wantArea, vbTextCompare) <> 0 Then
-            log = log & "PROBLEM: the print area did not stick, it reads " & _
-                  ws.PageSetup.PrintArea & ". "
-        End If
-        Do While Right$(log, 2) = ", "
-            log = Left$(log, Len(log) - 2)
-        Loop
-        log = "page setup (" & log & ") "
+    If ws.PageSetup.FitToPagesWide <> 1 Then
+        log = log & "PROBLEM: it did not stick, the sheet still reads " & _
+              ws.PageSetup.FitToPagesWide & " pages wide. "
     End If
 
-    PageSetupOne = log
-End Function
+    Do While Right$(log, 2) = ", "
+        log = Left$(log, Len(log) - 2)
+    Loop
 
-
-' Where the content on a sheet actually ends.
-'
-' Find with xlFormulas skips cells that hold nothing but formatting, which is
-' the whole point: the used range does not, and that is what puts a blank page
-' on the end of a revision page. Shapes are measured too, so a logo sitting
-' below the last row of text is not cut off by the print area.
-Private Function ContentRange(ByVal ws As Worksheet) As Range
-    Dim c As Range
-    Dim sh As Shape
-    Dim lastRow As Long, lastCol As Long
-
-    On Error Resume Next
-
-    Set c = ws.Cells.Find(What:="*", After:=ws.Cells(1, 1), LookIn:=xlFormulas, _
-                          LookAt:=xlPart, SearchOrder:=xlByRows, _
-                          SearchDirection:=xlPrevious)
-    If Not c Is Nothing Then lastRow = c.Row
-
-    Set c = ws.Cells.Find(What:="*", After:=ws.Cells(1, 1), LookIn:=xlFormulas, _
-                          LookAt:=xlPart, SearchOrder:=xlByColumns, _
-                          SearchDirection:=xlPrevious)
-    If Not c Is Nothing Then lastCol = c.Column
-
-    For Each sh In ws.Shapes
-        If sh.Visible Then
-            If sh.BottomRightCell.Row > lastRow Then lastRow = sh.BottomRightCell.Row
-            If sh.BottomRightCell.Column > lastCol Then lastCol = sh.BottomRightCell.Column
-        End If
-    Next sh
-
-    If Err.Number <> 0 Then Err.Clear
-    On Error GoTo 0
-
-    If lastRow < 1 Or lastCol < 1 Then Exit Function
-
-    Set ContentRange = ws.Range(ws.Cells(1, 1), ws.Cells(lastRow, lastCol))
+    PageSetupOne = "page setup (" & log & ") "
 End Function
 
 
