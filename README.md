@@ -51,7 +51,7 @@ If that number is not what you expect, the import did not take.
 One place, the declarations at the top of `vba/modUtil.bas`:
 
 ```vba
-Public Const TOOL_VERSION As String = "1.0"
+Public Const TOOL_VERSION As String = "1.1"
 ```
 
 That single constant feeds both the "Ready. Schedule tool version ..." box and
@@ -68,7 +68,7 @@ touches that sheet, so keep it in step by hand.
 
 That's it. Nothing else is typed twice.
 
-## The seven buttons
+## The eight buttons
 
 **Set up / repair schedules** — opens every workbook in the folder, points its
 Metadata at this MPI, rebuilds the local references, clears leftover links from
@@ -120,6 +120,9 @@ is already used.
 
 The `Add?` and `New Rev` headers carry hover notes explaining this on the
 sheet, and the same is written under the buttons on the Setup sheet.
+
+**Export to PDF** — writes a PDF of each schedule. The only button that never
+writes to a schedule at all. Full detail below.
 
 ## Setup sheet
 
@@ -549,21 +552,9 @@ which is what survives a Filery export and re-import. If the MPI is open from a
 URL, the tool still works but warns you that the links will be written as full
 URLs.
 
-## Known limits
+## Exporting to PDF
 
-- `DocumentNumber` comes from `CELL("filename")`, so it is blank until the file
-  has been saved once.
-- The title cell is located within the first 60 rows / 10 columns of a sheet.
-- Revision numbers above 999 would collide across families.
-
-## Not wired in yet: PDF export
-
-`vba/modExport.bas` is a standalone module, **not part of the tool**. There is
-no button for it, `InstallTool` does not know about it, and the other three
-modules do not call it. Import it alongside them and run **ExportToPdf** from
-`Alt+F8`.
-
-It asks four things and then gets on with it:
+**Export to PDF** asks four things and then gets on with it:
 
 1. **Which schedules** — every workbook in a folder you pick, or the files you
    pick yourself (Ctrl or Shift to select several, from anywhere).
@@ -580,19 +571,6 @@ any sheet with nothing on it to print. An empty sheet in the selection fails
 the whole export, which is why they are filtered out rather than left to break
 a file that would otherwise have been fine.
 
-Files are opened **read only, but otherwise the ordinary way**: links updated,
-calculation on. Nothing is written back to any schedule. A workbook already
-open in Excel is skipped rather than closed underneath you.
-
-An earlier version opened them with links not updated and calculation off, to
-print what was saved in the file rather than today's values, the way the
-schedule list reads. Those files exported with **a line struck through every
-calculated value**, while the same file exported by hand was clean. Manual
-calculation, events off and screen updating off are each harmless on their
-own; set together before the file is opened, they are not. So the export now
-turns off only the two settings that cannot affect what is rendered, and puts
-your calculation mode back afterwards.
-
 A PDF already in the way is deleted before the export writes, with its
 read-only attribute cleared if it has one. Excel refuses to overwrite a
 read-only file and reports it only as "Document not saved", so the file is
@@ -604,13 +582,42 @@ Two files of the same name, picked from different folders, are refused before
 anything is written: they would produce one PDF, and the second would silently
 replace the first.
 
-Results go to the top of the Log sheet like every other run, and it finishes
-with the usual summary box.
+A workbook already open in Excel is skipped rather than closed underneath you.
+Nothing is ever written back to a schedule.
 
-### Wiring it in later
+### Why this one opens files differently
 
-It uses `modUtil` and nothing else. The logging, quiet-mode and recovery
-helpers at the bottom of the module are local copies of `modMain`'s, which are
-`Private` to that module and cannot be called from outside it. Wiring it in
-means adding a button in `BuildButtons`, then either moving the entry points
-into `modMain` or making `modMain`'s copies `Public`, and deleting the copies.
+Every other button opens a schedule with **links not updated and calculation
+off**, so it reads what is actually saved in the file. This one opens them
+**read only but otherwise the ordinary way**: links updated, calculation on.
+
+That is not a preference, it is a bug that took a while to find. A schedule
+opened cold with calculation manual, events off and screen updating off
+exported with **a line struck through every calculated value**, while the same
+file exported by hand was clean. No cell reported `Font.Strikethrough` and
+there was no conditional formatting, so nothing in the file explained it.
+Bisecting the settings one at a time: each is harmless on its own, the
+combination is not. So the export turns off only `DisplayAlerts` and
+`AskToUpdateLinks`, which cannot affect what is rendered.
+
+`BeginQuiet` in `modMain` takes a `keepEvents` flag for exactly this, and
+`OpenQuiet` takes an `updateLinks` argument that defaults to 0 for everything
+else.
+
+Exporting several sheets as one document is done the way the Publish dialog
+does it: select them, then export the **active sheet**, which means "active
+sheet(s)" and takes the whole selected group. `ExportAsFixedFormat` is a method
+of a `Workbook`, a `Worksheet` or a `Chart`, and **not** of the `Sheets`
+collection, so `ActiveWindow.SelectedSheets.ExportAsFixedFormat` does not
+compile. When the wanted sheets are every visible sheet there is, which is what
+a tidy schedule looks like, the workbook is exported directly and the selection
+is left alone.
+
+## Known limits
+
+- `DocumentNumber` comes from `CELL("filename")`, so it is blank until the file
+  has been saved once.
+- The title cell is located within the first 60 rows / 10 columns of a sheet.
+- Revision numbers above 999 would collide across families.
+- A PDF path longer than 255 characters is refused rather than truncated, which
+  a deep synced folder plus `_pdf` can reach.

@@ -15,7 +15,7 @@ Public Const SH_LOG   As String = "Log"
 
 ' Shown on the Setup sheet and in the install box, so "which build is loaded"
 ' is answerable at a glance after a re-import.
-Public Const TOOL_VERSION As String = "1.0"
+Public Const TOOL_VERSION As String = "1.1"
 
 ' How far down/across we look for the "SCHEDULE OF ..." title cell.
 Public Const TITLE_MAX_ROW As Long = 60
@@ -139,6 +139,14 @@ Public Function BaseName(ByVal fullPath As String) As String
     Else
         BaseName = fullPath
     End If
+End Function
+
+
+' The folder part of a full path, without the trailing separator.
+Public Function FolderOf(ByVal fullPath As String) As String
+    Dim p As Long
+    p = InStrRev(fullPath, Application.PathSeparator)
+    If p > 1 Then FolderOf = Left$(fullPath, p - 1)
 End Function
 
 
@@ -371,6 +379,30 @@ Public Function PickWorkbook(ByVal promptText As String, ByVal startFolder As St
 End Function
 
 
+' The same, for several files at once. Returns Nothing if the user cancels,
+' so "picked nothing" and "backed out" can be told apart.
+Public Function PickWorkbooks(ByVal promptText As String, ByVal startFolder As String) As Collection
+    Dim fd As FileDialog
+    Dim c As New Collection
+    Dim i As Long
+
+    Set fd = Application.FileDialog(msoFileDialogFilePicker)
+    With fd
+        .Title = promptText
+        .AllowMultiSelect = True
+        .Filters.Clear
+        .Filters.Add "Excel files", "*.xls;*.xlsx;*.xlsm;*.xlsb"
+        If Len(startFolder) > 0 Then .InitialFileName = EndSep(startFolder)
+        If .Show <> -1 Then Exit Function
+        For i = 1 To .SelectedItems.Count
+            c.Add .SelectedItems(i)
+        Next i
+    End With
+
+    Set PickWorkbooks = c
+End Function
+
+
 ' True if a workbook of that name is already open, in which case it cannot
 ' be renamed on disk.
 Public Function IsWorkbookOpen(ByVal fileName As String) As Boolean
@@ -405,6 +437,36 @@ Public Function FileExtension(ByVal fileName As String) As String
 End Function
 
 
+Public Function NameWithoutExtension(ByVal fileName As String) As String
+    Dim p As Long
+    p = InStrRev(fileName, ".")
+    If p > 1 Then
+        NameWithoutExtension = Left$(fileName, p - 1)
+    Else
+        NameWithoutExtension = fileName
+    End If
+End Function
+
+
+' A file name Windows will accept. Sheet names can hold characters a file
+' name cannot, so anything built out of one has to come through here.
+Public Function SafeName(ByVal name As String) As String
+    Dim bad As String
+    Dim i As Long
+
+    bad = "\/:*?""<>|"
+    SafeName = name
+    For i = 1 To Len(bad)
+        SafeName = Replace$(SafeName, Mid$(bad, i, 1), "-")
+    Next i
+
+    SafeName = Trim$(SafeName)
+    Do While Right$(SafeName, 1) = "."        ' Windows drops a trailing dot
+        SafeName = Left$(SafeName, Len(SafeName) - 1)
+    Loop
+End Function
+
+
 Public Function PickImage(ByVal promptText As String, ByVal startFolder As String) As String
     Dim fd As FileDialog
     Set fd = Application.FileDialog(msoFileDialogFilePicker)
@@ -436,4 +498,48 @@ Public Function FileStamp(ByVal fullPath As String) As Double
         FileStamp = 0
     End If
     On Error GoTo 0
+End Function
+
+
+' ---------------------------------------------------------------------------
+' Collections.
+' ---------------------------------------------------------------------------
+
+' A Collection as the 0-based Variant array that Worksheets() and friends want.
+Public Function ToArray(ByVal c As Collection) As Variant
+    Dim a() As Variant
+    Dim i As Long
+
+    ReDim a(0 To c.Count - 1)
+    For i = 1 To c.Count
+        a(i - 1) = c(i)
+    Next i
+    ToArray = a
+End Function
+
+
+Public Function JoinCollection(ByVal c As Collection, ByVal sep As String) As String
+    Dim i As Long
+    For i = 1 To c.Count
+        If i > 1 Then JoinCollection = JoinCollection & sep
+        JoinCollection = JoinCollection & c(i)
+    Next i
+End Function
+
+
+' The first file name that appears twice in a list of full paths, or "".
+Public Function DuplicateName(ByVal files As Collection) As String
+    Dim seen As Object
+    Dim i As Long
+    Dim key As String
+
+    Set seen = CreateObject("Scripting.Dictionary")
+    For i = 1 To files.Count
+        key = LCase$(BaseName(files(i)))
+        If seen.Exists(key) Then
+            DuplicateName = BaseName(files(i))
+            Exit Function
+        End If
+        seen.Add key, True
+    Next i
 End Function
