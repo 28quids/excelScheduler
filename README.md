@@ -309,6 +309,10 @@ reference with an empty revision table. Its title is taken from the
 `SCHEDULE OF ...` heading on its own sheet, or failing that from the file name
 after the last ` - `. The schedule sheet itself is not otherwise touched.
 
+Existing Front Cover and Revision Page sheets are **replaced**, not left alone.
+The log says which it did for every file, and how many revision lines it kept,
+because a silent success reads exactly like having done nothing.
+
 Afterwards the normal repair runs on the file, which is what makes the links
 local: nothing ends up pointing back at the reference workbook. That includes
 formulas **you** wrote by hand on the cover. Copying a sheet turns
@@ -316,6 +320,17 @@ formulas **you** wrote by hand on the cover. Copying a sheet turns
 now points every such reference back at this workbook's own sheet, as long as a
 sheet of that name exists here. References to sheets this workbook does not
 have are left alone, because those are real links somewhere else.
+
+A reference to **somebody else's MAINPROJECTINFO** is repointed at this one
+rather than reported. Schedules have no `Setup` sheet of their own, so a
+formula reading `'[OLD-MPI.xlsm]Setup'!$B$3` can only have been meant for the
+current MPI, and it is rewritten. That covers a renamed MPI and a schedule
+copied in from another project, both of which used to survive every pass and
+be flagged as "STILL LINKED" without anything being done about it.
+
+A link the tool genuinely cannot resolve is still only reported, never broken,
+but the message now names the sheet and cells holding it so there is somewhere
+to look.
 
 Only `Metadata!B4:B6` and the project fields still reach outside, to the MPI,
 exactly as everywhere else.

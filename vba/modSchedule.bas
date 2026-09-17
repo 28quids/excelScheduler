@@ -210,6 +210,9 @@ Public Function RepairWorkbook(ByVal wbTgt As Workbook, _
     ' --- Anything hand-written that got externalised by a sheet copy ------
     log = log & LocaliseFormulas(wbTgt)
 
+    ' --- References to some other MAINPROJECTINFO ------------------------
+    log = log & RepointStrayMpiRefs(wbTgt, mpiName, setupSheetName)
+
     ' --- Housekeeping ----------------------------------------------------
     log = log & RemoveDeadNames(wbTgt)
     log = log & TidyLinks(wbTgt, mpiName)
@@ -652,6 +655,73 @@ Private Function LocaliseFormulas(ByVal wb As Workbook) As String
 End Function
 
 
+' Points a reference to somebody else's MAINPROJECTINFO at this one.
+'
+' LocaliseFormulas can only redirect a reference to a sheet this workbook has
+' itself, and no schedule has a Setup sheet. So a formula left over from
+' another project, or from before the MPI was renamed, survived every pass and
+' was merely reported as "STILL LINKED". It is now repointed: a reference to a
+' sheet called Setup, in a workbook that is not this MPI, can only have been
+' meant for this MPI.
+Private Function RepointStrayMpiRefs(ByVal wb As Workbook, ByVal mpiName As String, _
+                                     ByVal setupSheetName As String) As String
+    Dim ws As Worksheet
+    Dim rng As Range, cell As Range
+    Dim re As Object, matches As Object, m As Object
+    Dim f As String, newF As String
+    Dim bookName As String, sheetName As String
+    Dim changed As Long
+    Dim fixedBooks As Object
+
+    Set fixedBooks = CreateObject("Scripting.Dictionary")
+
+    Set re = CreateObject("VBScript.RegExp")
+    re.Global = True
+    re.IgnoreCase = True
+    re.pattern = "'\[([^\]\[]+)\]([^']+)'!|\[([^\]\[]+)\]([A-Za-z0-9_.]+)!"
+
+    For Each ws In wb.Worksheets
+        Set rng = Nothing
+        On Error Resume Next
+        Set rng = ws.UsedRange.SpecialCells(xlCellTypeFormulas)
+        On Error GoTo 0
+        If Not rng Is Nothing Then
+            For Each cell In rng.Cells
+                f = CellFormula(cell)
+                If InStr(f, "[") > 0 Then
+                    newF = f
+                    Set matches = re.Execute(f)
+                    For Each m In matches
+                        bookName = m.SubMatches(0)
+                        sheetName = m.SubMatches(1)
+                        If Len(bookName) = 0 Then
+                            bookName = m.SubMatches(2)
+                            sheetName = m.SubMatches(3)
+                        End If
+
+                        If StrComp(sheetName, setupSheetName, vbTextCompare) = 0 _
+                           And StrComp(bookName, mpiName, vbTextCompare) <> 0 Then
+                            newF = Replace(newF, m.Value, _
+                                   "'[" & mpiName & "]" & setupSheetName & "'!")
+                            fixedBooks(LCase$(bookName)) = True
+                        End If
+                    Next m
+
+                    If StrComp(newF, f, vbBinaryCompare) <> 0 Then
+                        PutFormula cell, newF
+                        changed = changed + 1
+                    End If
+                End If
+            Next cell
+        End If
+    Next ws
+
+    If changed > 0 Then _
+        RepointStrayMpiRefs = "Repointed " & changed & " formula(s) from " & _
+                              Join(fixedBooks.Keys, ", ") & " to " & mpiName & ". "
+End Function
+
+
 ' Removes defined names left over from copied templates (#REF! or pointing at
 ' some other workbook). These are what make Excel nag about updating links.
 Private Function RemoveDeadNames(ByVal wb As Workbook) As String
@@ -742,13 +812,50 @@ Private Function TidyLinks(ByVal wb As Workbook, ByVal mpiName As String) As Str
                 On Error GoTo 0
                 broke = broke + 1
             Else
-                log = log & "STILL LINKED to " & BaseName(src) & " - check this. "
+                log = log & "STILL LINKED to " & BaseName(src) & " from " & _
+                      WhereReferenced(wb, BaseName(src)) & ". "
             End If
         End If
     Next i
 
     If broke > 0 Then log = log & "Cleared " & broke & " unused external link(s). "
     TidyLinks = log
+End Function
+
+
+' The first few cells still referencing a given workbook, so a warning names
+' somewhere to look rather than just a file.
+Private Function WhereReferenced(ByVal wb As Workbook, ByVal bookName As String) As String
+    Dim ws As Worksheet
+    Dim rng As Range, cell As Range
+    Dim found As String
+    Dim n As Long
+
+    For Each ws In wb.Worksheets
+        Set rng = Nothing
+        On Error Resume Next
+        Set rng = ws.UsedRange.SpecialCells(xlCellTypeFormulas)
+        On Error GoTo 0
+        If Not rng Is Nothing Then
+            For Each cell In rng.Cells
+                If InStr(1, CellFormula(cell), "[" & bookName & "]", vbTextCompare) > 0 Then
+                    n = n + 1
+                    If n <= 3 Then
+                        found = found & IIf(Len(found) > 0, ", ", "") & _
+                                ws.Name & "!" & cell.Address(False, False)
+                    End If
+                End If
+            Next cell
+        End If
+    Next ws
+
+    If n = 0 Then
+        WhereReferenced = "a defined name or chart"
+    ElseIf n > 3 Then
+        WhereReferenced = found & " and " & (n - 3) & " more"
+    Else
+        WhereReferenced = found
+    End If
 End Function
 
 
@@ -1398,6 +1505,7 @@ Public Function CopyCommonSheetsTo(ByVal wbSrc As Workbook, ByVal wbTgt As Workb
     Dim title As String
     Dim idxFront As Long, idxRev As Long
     Dim log As String
+    Dim hadSheets As Boolean
 
     Set wsSrcFront = GetSheet(wbSrc, SH_FRONT)
     Set wsSrcRev = GetSheet(wbSrc, SH_REV)
@@ -1408,6 +1516,7 @@ Public Function CopyCommonSheetsTo(ByVal wbSrc As Workbook, ByVal wbTgt As Workb
 
     Set wsRev = GetSheet(wbTgt, SH_REV)
     Set wsFront = GetSheet(wbTgt, SH_FRONT)
+    hadSheets = Not (wsRev Is Nothing)
 
     ' --- everything that belongs to this document, before anything is deleted
     If wsRev Is Nothing Then
@@ -1433,7 +1542,8 @@ Public Function CopyCommonSheetsTo(ByVal wbSrc As Workbook, ByVal wbTgt As Workb
     If Len(title) = 0 Then log = log & "PROBLEM: could not work out a schedule title. "
 
     ' --- swap the sheets -------------------------------------------------
-    If Not wsFront Is Nothing Then wsFront.Delete
+    ' Only drop the old Front Cover if there is one coming to replace it.
+    If Not wsFront Is Nothing And Not wsSrcFront Is Nothing Then wsFront.Delete
     If Not wsRev Is Nothing Then wsRev.Delete
 
     If Not wsSrcFront Is Nothing Then
@@ -1452,6 +1562,13 @@ Public Function CopyCommonSheetsTo(ByVal wbSrc As Workbook, ByVal wbTgt As Workb
     If Len(title) > 0 Then SetTitle wsRev, title
     log = log & RestoreRevisions(wsRev, rd)
     RestoreKeeps wsRev, keeps
+
+    ' Say what happened even when it all went right. A silent success reads
+    ' exactly like having done nothing, which is how this looked before.
+    log = IIf(hadSheets, "Replaced Front Cover and Revision Page. ", _
+                         "Added Front Cover and Revision Page. ") & log
+    If rd.Valid Then log = log & "Kept " & rd.RowCount & " revision line(s). "
+    If Len(title) > 0 Then log = log & "Title '" & title & "'. "
 
     CopyCommonSheetsTo = log
 End Function
