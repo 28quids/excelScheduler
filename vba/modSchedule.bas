@@ -616,7 +616,16 @@ Private Function LocaliseFormulas(ByVal wb As Workbook) As String
     re.Global = True
     re.IgnoreCase = True
     ' '[Book.xlsx]Sheet Name'!  or  [Book.xlsx]SheetName!
-    re.pattern = "'\[[^\]\[]+\]([^']+)'!|\[[^\]\[]+\]([A-Za-z0-9_.]+)!"
+    ' The [^']* before the bracket is the whole point. Excel writes a
+    ' path-qualified reference whenever the other workbook is CLOSED:
+    '
+    '     ='C:\Projects\[SRP-0023.xlsx]Revision Page'!B12
+    '
+    ' and the source of a copied sheet is always closed by the time this runs.
+    ' Without it this matched only the form you get while both are open, so a
+    ' schedule whose cover had been copied from another was reported as linked
+    ' and never actually relinked.
+    re.pattern = "'[^']*\[[^\]\[]+\]([^']+)'!|\[[^\]\[]+\]([A-Za-z0-9_.]+)!"
 
     For Each ws In wb.Worksheets
         Set rng = Nothing
@@ -678,7 +687,8 @@ Private Function RepointStrayMpiRefs(ByVal wb As Workbook, ByVal mpiName As Stri
     Set re = CreateObject("VBScript.RegExp")
     re.Global = True
     re.IgnoreCase = True
-    re.pattern = "'\[([^\]\[]+)\]([^']+)'!|\[([^\]\[]+)\]([A-Za-z0-9_.]+)!"
+    ' Path-qualified when the other workbook is closed - see LocaliseFormulas.
+    re.pattern = "'[^']*\[([^\]\[]+)\]([^']+)'!|\[([^\]\[]+)\]([A-Za-z0-9_.]+)!"
 
     For Each ws In wb.Worksheets
         Set rng = Nothing

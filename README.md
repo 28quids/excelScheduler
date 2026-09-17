@@ -330,7 +330,18 @@ be flagged as "STILL LINKED" without anything being done about it.
 
 A link the tool genuinely cannot resolve is still only reported, never broken,
 but the message now names the sheet and cells holding it so there is somewhere
-to look.
+to look. Breaking one would hardcode whatever value was cached, which is worse
+than a warning.
+
+Both passes read references in the **path-qualified** form Excel uses whenever
+the other workbook is closed:
+
+```excel
+='C:\Projects\[SRP1141-RAM-XX-XX-T-M-0023.xlsx]Revision Page'!B12
+```
+
+That is always the form here, since the workbook a sheet was copied from is
+closed by the time the repair runs on the copy.
 
 Only `Metadata!B4:B6` and the project fields still reach outside, to the MPI,
 exactly as everywhere else.
