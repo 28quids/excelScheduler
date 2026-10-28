@@ -150,7 +150,7 @@ are reset to the default rather than left to be read wrong.
 | `B7` Schedules folder | blank = the folder this file is saved in. Filled in automatically if the tool has to ask |
 | `B8` Backup before changes | `Yes` / `No` |
 | `B9` Refresh list on open | `No` by default. `Yes` reads every schedule at startup |
-| `B10` Full refresh every time | `No` by default, which reopens only files whose modified date changed since the last refresh. `Yes` always reopens everything |
+| `B10` Full refresh every time | Applies to the refresh the other buttons run when they finish, and to refresh on open. `No` by default, which reopens only files whose modified date changed since the last refresh. `Yes` always reopens everything. The **Refresh schedule list** button always reopens everything regardless |
 | `B11` Reference schedule | the schedule that is set up correctly. Used by both copy buttons. Blank = the button asks, then fills this in |
 | `B12` Header image | logo for the top-right of the header. Blank = the button asks; decline and headers stay text only |
 | `B13` Header image scale % | that logo's size as a percentage of the image's own size. Default `20` |
@@ -501,12 +501,15 @@ Radiators Schedule.xlsx`. Every run writes a line per file to the **Log** sheet
 and finishes with a summary box: how many succeeded, were skipped, or failed,
 and how long it took.
 
-The refresh is **incremental by default**. A file whose modified date has not
-changed since the last refresh is not reopened, its row is reused, and only its
-comparison against the Setup values is recalculated. So the first refresh costs
-what it costs, and every one after it is close to instant unless something
-actually changed. Set `Full refresh every time` to `Yes` on the Setup sheet to
-force a complete re-read.
+The **Refresh schedule list** button always reopens every file. The refresh
+the other buttons run when they finish (and refresh on open) is
+**incremental**: a file whose modified date has not changed since the last
+refresh is not reopened, its row is reused, and only its comparison against
+the Setup values is recalculated. That shortcut is only taken when the list was
+last built from the same folder, so switching folders always triggers a full
+read. Set `Full refresh every time` to `Yes` on the Setup sheet to make those
+automatic refreshes full as well. The summary box names the folder it read, so
+a stale `Schedules folder` override is easy to spot.
 
 The refresh also reads with calculation set to manual. That is both faster and
 more honest: it reports what is saved in the file rather than what Excel would

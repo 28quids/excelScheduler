@@ -59,6 +59,9 @@ Private Const C_STAMP     As Long = 25     ' hidden, file modified time
 Private Const C_FILECHK   As Long = 26     ' hidden, checks that come from the file itself
 Private Const REV_FIELDS  As Long = 7      ' Rev, Status, Date, Pr, Ch, Ap, Descr
 
+' Hidden workbook name holding the folder the list was last built from.
+Private Const NM_LISTFOLDER As String = "SchedListFolder"
+
 ' Where the PDFs go by default, inside the folder the schedules came from.
 Private Const PDF_SUBFOLDER As String = "_pdf"
 
@@ -219,7 +222,7 @@ Public Sub SetupProject()
     ShowSummary "Set up / repair schedules", done, skipped, failed, _
                 Timer - started, IIf(Len(backupDir) > 0, "Backup: " & backupDir, "")
 
-    RefreshScheduleList
+    RefreshList False
     Exit Sub
 
 Fail:
@@ -229,8 +232,17 @@ End Sub
 
 ' ===========================================================================
 ' Button 2 - read every schedule back and check it
+'
+' The button always reopens every file. The other buttons finish with the
+' incremental refresh, which reuses rows for files whose modified date has not
+' changed, but only when the list was last built from this same folder.
 ' ===========================================================================
 Public Sub RefreshScheduleList()
+    RefreshList True
+End Sub
+
+
+Private Sub RefreshList(ByVal force As Boolean)
     Dim wsSetup As Worksheet, wsList As Worksheet
     Dim folderPath As String, fileName As String, fullPath As String
     Dim wbTgt As Workbook
@@ -253,7 +265,9 @@ Public Sub RefreshScheduleList()
     mpiName = Trim$(CStr(wsSetup.Range("B3").Value))
     mpiNo = Trim$(CStr(wsSetup.Range("B4").Value))
     mpiClient = Trim$(CStr(wsSetup.Range("B1").Value))
-    fullRefresh = (UCase$(Trim$(CStr(Opt(wsSetup, LBL_FULL, R_OPT_FULL).Value))) = "YES")
+    fullRefresh = force Or _
+                  (UCase$(Trim$(CStr(Opt(wsSetup, LBL_FULL, R_OPT_FULL).Value))) = "YES") Or _
+                  (StrComp(ListFolder(), folderPath, vbTextCompare) <> 0)
 
     Set files = ScheduleFiles(folderPath)
     Set keep = SnapshotList(wsList)
@@ -309,11 +323,13 @@ Public Sub RefreshScheduleList()
 
     ProgressDone
     Opt(wsSetup, LBL_LIST, R_OPT_LIST).Value = Format$(Now, "dd/mm/yyyy hh:nn")
+    SetListFolder folderPath
     EndQuiet
 
     ShowSummary "Refresh schedule list", readCount, reused, failed, Timer - started, _
-                IIf(reused > 0, reused & " file(s) were unchanged since the last refresh " & _
-                                "and were not reopened.", "")
+                "Folder read: " & folderPath & _
+                IIf(reused > 0, vbCrLf & reused & " file(s) were unchanged since the last " & _
+                                "refresh and were not reopened.", "")
     wsList.Activate
     Exit Sub
 
@@ -412,7 +428,7 @@ Public Sub AddRevisionToTicked()
     ProgressDone
     EndQuiet
     ShowSummary "Add revision", done, skipped, failed, Timer - started, ""
-    RefreshScheduleList
+    RefreshList False
     Exit Sub
 
 Fail:
@@ -775,7 +791,7 @@ Public Sub CopyCommonSheets()
 
     ShowSummary "Copy cover & revision page", done, skipped, failed, Timer - started, _
                 IIf(Len(backupDir) > 0, "Backup: " & backupDir, "")
-    RefreshScheduleList
+    RefreshList False
     Exit Sub
 
 Fail:
@@ -1111,7 +1127,7 @@ Private Sub ApplyRenames(ByVal wsList As Worksheet, ByVal folderPath As String)
     ProgressDone
     EndQuiet
     ShowSummary "Rename files", done, 0, failed, Timer - started, ""
-    RefreshScheduleList
+    RefreshList False
     Exit Sub
 
 Fail:
@@ -1543,7 +1559,7 @@ Public Sub Auto_Open()
     If wsSetup Is Nothing Then Exit Sub
     If UCase$(Trim$(CStr(Opt(wsSetup, LBL_AUTO, R_OPT_AUTO).Value))) = "YES" Then
         ' Never nag on startup - if the folder is not known, just skip.
-        If Len(SchedulesFolder(False)) > 0 Then RefreshScheduleList
+        If Len(SchedulesFolder(False)) > 0 Then RefreshList False
     End If
 End Sub
 
@@ -1752,6 +1768,25 @@ Private Function CanReuse(ByVal keep As Object, ByVal fileName As String, _
 
     CanReuse = (old <> 0) And (Abs(old - stamp) < 0.000001)
 End Function
+
+
+' The folder the list was last built from, kept in a hidden workbook name so a
+' row cached from one folder is never reused for a same-named file in another.
+Private Function ListFolder() As String
+    On Error Resume Next
+    ListFolder = Evaluate(ThisWorkbook.Names(NM_LISTFOLDER).RefersTo)
+    On Error GoTo 0
+End Function
+
+
+Private Sub SetListFolder(ByVal folderPath As String)
+    On Error Resume Next
+    ThisWorkbook.Names(NM_LISTFOLDER).Delete
+    ' A path too long for a name just means the next refresh reads everything.
+    ThisWorkbook.Names.Add Name:=NM_LISTFOLDER, _
+        RefersTo:="=""" & Replace(folderPath, """", """""") & """", Visible:=False
+    On Error GoTo 0
+End Sub
 
 
 Private Sub RestoreRow(ByVal wsList As Worksheet, ByVal r As Long, ByVal vals As Variant)
