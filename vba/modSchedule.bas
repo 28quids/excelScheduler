@@ -925,11 +925,11 @@ Private Function WriteRevisionFormulas(ByVal wsRev As Worksheet) As String
         Exit Function
     End If
 
-    WriteIfLabelled wsRev, "Revision", RevFormula("XLOOKUP(MAX(rank),rank,rev)", False), log
-    WriteIfLabelled wsRev, "Date", RevFormula("XLOOKUP(MAX(rank),rank,RevisionTable[Date])", False), log
-    WriteIfLabelled wsRev, "Prepared by", RevFormula("XLOOKUP(MAX(rank),rank,RevisionTable[Prepared by])", False), log
-    WriteIfLabelled wsRev, "Checked by", RevFormula("XLOOKUP(MAX(rank),rank,RevisionTable[Checked by])", False), log
-    WriteIfLabelled wsRev, "Approved by", RevFormula("XLOOKUP(MAX(rank),rank,RevisionTable[Approved by])", False), log
+    WriteIfLabelled wsRev, "Revision", RevFormula(RevLookup("Revision"), False), log
+    WriteIfLabelled wsRev, "Date", RevFormula(RevLookup("Date"), False), log
+    WriteIfLabelled wsRev, "Prepared by", RevFormula(RevLookup("Prepared by"), False), log
+    WriteIfLabelled wsRev, "Checked by", RevFormula(RevLookup("Checked by"), False), log
+    WriteIfLabelled wsRev, "Approved by", RevFormula(RevLookup("Approved by"), False), log
     WriteIfLabelled wsRev, "Suitability Status", _
         RevFormula("IFERROR(LEFT(stat,FIND("" - "",stat)-1),stat)", True), log
     WriteIfLabelled wsRev, "Suitability Description", _
@@ -1019,9 +1019,27 @@ Private Function RebuildRevFormula(ByVal f As String) As String
     Next i
 
     If Len(col) = 0 Then
-        RebuildRevFormula = RevFormula("XLOOKUP(MAX(rank),rank,rev)", False)
+        RebuildRevFormula = RevFormula(RevLookup("Revision"), False)
     Else
-        RebuildRevFormula = RevFormula("XLOOKUP(MAX(rank),rank,RevisionTable[" & col & "])", False)
+        RebuildRevFormula = RevFormula(RevLookup(col), False)
+    End If
+End Function
+
+
+' The latest revision's value in one RevisionTable column.
+'
+' A lookup that lands on an empty cell returns 0, not blank, which is how an
+' issued title block came to read "CHECKED BY: 0" whenever the latest line had
+' nobody in Checked by yet. Joining "" on the end turns that 0 back into an
+' empty string. Date is the exception: it has to stay a number so it can be
+' formatted, and the revision line it comes from always has a date.
+Private Function RevLookup(ByVal col As String) As String
+    If StrComp(col, "Revision", vbTextCompare) = 0 Then
+        RevLookup = "XLOOKUP(MAX(rank),rank,rev)&"""""
+    ElseIf StrComp(col, "Date", vbTextCompare) = 0 Then
+        RevLookup = "XLOOKUP(MAX(rank),rank,RevisionTable[Date])"
+    Else
+        RevLookup = "XLOOKUP(MAX(rank),rank,RevisionTable[" & col & "])&"""""
     End If
 End Function
 
