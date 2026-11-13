@@ -102,6 +102,7 @@ Three groups on the Setup sheet, left to right by how often you need them.
 | Add revision to ticked | | Set classification |
 | Export ticked to PDF | | Copy headers & footers |
 | | | Copy cover & revision page |
+| | | Title block |
 | | | Tidy sheets |
 | | | Rename files |
 
@@ -119,8 +120,10 @@ That one button opens each ticked file once and does, in order:
 1. Front Cover and Revision Page from the reference schedule (its own title
    and any revision history are kept, as with **Copy cover & revision page**)
 2. links set up to this MPI
-3. headers and footers from the reference, logo included
-4. sheets put in order, Metadata hidden
+3. the title block and General Notes box, fitted to its columns, and added
+   above the schedule if it has none (see [Title block](#title-block))
+4. headers and footers from the reference, logo included
+5. sheets put in order, Metadata hidden
 
 then saves it once. A file that fails any step is closed **without saving**,
 so a half-done schedule is never written. It only ever works on ticked rows:
@@ -519,6 +522,67 @@ what the dropdown offers from here on.
 `A1`/`A2` and `B1`/`B2` share a description on purpose. The number is the
 issue count, not a different status. Add `A3`, `B3` and so on as needed.
 
+## Title block
+
+**Title block** draws the block at the top of each ticked schedule sheet so
+nobody merges cells by hand:
+
+```
+| SCHEDULE OF ...  | DOCUMENTS REFERENCE: ...  |                     |
+| CLIENT: ...      | PURPOSE OF DOCUMENT: ...  | REVISION: ...       |
+| PROJECT: ...     | PROJECT NUMBER: ...       | REVISION DATE: ...  |
+| PREPARED BY: ... | CHECKED BY: ...           | APPROVED BY: ...    |
+
+| General Notes: ... merged across the full width                   |
+```
+
+It stays in cells rather than the page header on purpose. A native header is
+capped at 255 characters (this block is already about 240), cannot hold a
+formula so it would go stale the moment anyone edited a revision by hand,
+shows only in print preview, and cannot have borders. In cells every value
+is a live formula on the local Metadata sheet, and it shows in a screenshot.
+
+What it does to each schedule sheet:
+
+- **Width**: the block spans the schedule's own columns, the print area if one
+  is set, otherwise the rightmost column with anything in it below the notes.
+- **Splits**: where the three groups divide is **kept** from the existing block
+  when it still spans exactly those columns and every group's text fits.
+  Otherwise the columns are divided in proportion to each group's longest line.
+  So a repair never reshapes a block that already looks right, and adding a
+  column re-fits it.
+- **Style**: Verdana 7, centred, thin box round each group, row 1 at 20.1pt
+  and rows 2-4 at 9.9pt, the project template. A block drawn in another style
+  is brought into line.
+- **Notes**: the General Notes box (a merged cell in column A just below the
+  block, starting `General Notes` or `Notes`) is merged across the full width.
+  Its text is never rewritten, so bold and line breaks in it survive.
+- **Every page**: print titles become rows 1 to the end of the notes box, or
+  further if they already reached further (that is where the schedule's own
+  column headings are). Notes repeat on every page on purpose: whoever has page
+  3 of 5 needs them too.
+- **Page numbers**: `Page &P of &N` goes in the right footer when the sheet has
+  no page number anywhere and that section is empty.
+
+**A schedule with no title block gets one.** 12 rows are inserted above it:
+the block, a gap, an empty `General Notes:` box six rows tall, and a gap.
+Everything below moves down, formulas, print area and print titles included,
+as Excel does for any inserted row. Grow the notes box by inserting rows
+inside it. The Log reminds you to check that the print titles take in the
+schedule's own column headings, since the tool cannot tell which rows those
+are on a sheet it has never seen.
+
+**It stops rather than guesses.** A sheet is left alone, and named as a
+failure on the Log, when:
+
+- rows 1-4 hold text that is neither a title block label nor the schedule title
+- title block labels sit anywhere other than rows 1-4
+- there are fewer than six labels in rows 1-4, too few to be sure it is a block
+- the schedule is under three columns wide
+
+A schedule whose block and print titles are already exactly right is not
+saved, so its modified date does not move.
+
 ## Schedules that print their own title block
 
 Some schedules carry the title block across the top of the schedule sheet
@@ -781,6 +845,9 @@ is left alone.
 
 ## Known limits
 
+- The title block's split points are chosen from an estimate of how wide
+  Verdana 7 capitals are (`TB_CHAR_W` in `modSchedule.bas`). A warning on the
+  Log means check a print preview, not that anything was cut off for certain.
 - The ScheduleList columns changed in 1.2 (`RevDescription` and
   `Classification` were added). `InstallTool` empties the list, and the first
   refresh after it is a full one. Ticks on the old list are not carried over.

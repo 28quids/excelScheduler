@@ -13,6 +13,7 @@ Option Explicit
 '   CopyHeadersFooters    headers and footers from the reference schedule
 '   CopyCommonSheets      cover and revision page from the reference schedule
 '   SetClassification     the security marking, from the Setup sheet
+'   DrawTitleBlocks       the title block and notes box on the schedule sheet
 '   TidySheets            sheet order, names and visibility
 '   RenameFiles           find and replace across file names
 '
@@ -868,8 +869,9 @@ End Sub
 '   1. Front Cover and Revision Page from the reference schedule (its own
 '      title and any revision history are kept, as with the copy button)
 '   2. links set up to this file
-'   3. headers and footers from the reference, logo included
-'   4. sheets put in order, Metadata hidden
+'   3. the title block and notes box on the schedule sheet, added if missing
+'   4. headers and footers from the reference, logo included
+'   5. sheets put in order, Metadata hidden
 '
 ' then saved once. A file that fails any step is closed without saving, so a
 ' half-done schedule is never written. It never runs on everything: with
@@ -889,6 +891,7 @@ Public Sub SetupNewSchedules()
     Dim statuses As Variant
     Dim imgPath As String
     Dim imgW As Double, imgH As Double, scalePct As Double
+    Dim changed As Long
     Const JOB As String = "Set up new schedule(s)"
 
     Set wsSetup = GetSheet(ThisWorkbook, SH_SETUP)
@@ -942,9 +945,11 @@ Public Sub SetupNewSchedules()
               "  1. the reference's Front Cover and Revision Page" & vbCrLf & _
               "     (its own title and any revision history are kept)" & vbCrLf & _
               "  2. its links set up to this file" & vbCrLf & _
-              "  3. the reference's headers and footers" & _
+              "  3. the title block and notes box, fitted to its columns" & vbCrLf & _
+              "     (added above the schedule if it has none)" & vbCrLf & _
+              "  4. the reference's headers and footers" & _
               IIf(Len(imgPath) > 0, ", with " & BaseName(imgPath), "") & vbCrLf & _
-              "  4. its sheets put in order, Metadata hidden" & vbCrLf & vbCrLf & _
+              "  5. its sheets put in order, Metadata hidden" & vbCrLf & vbCrLf & _
               "Then it is saved, once. A file that fails any step is not saved at all." & _
               vbCrLf & vbCrLf & BackupLine(wsSetup) & vbCrLf & vbCrLf & "Continue?", _
               JOB, False) Then Exit Sub
@@ -983,10 +988,13 @@ Public Sub SetupNewSchedules()
                              RepairWorkbook(wbTgt, ThisWorkbook.FullName, SH_SETUP, _
                                             projNameRef, projNoRef, clientRef, statuses, _
                                             ProjectFields(wsSetup)) & " "
-                    stepLog = CopyHeadersFootersTo(wbSrc, wbTgt, imgPath, imgW, imgH)
-                    oneLog = oneLog & "3. " & stepLog
-                    If InStr(1, stepLog, "PROBLEM:", vbTextCompare) = 0 Then
-                        oneLog = oneLog & "4. " & TidySheetsIn(wbTgt)
+                    oneLog = oneLog & "3. " & BuildTitleBlocks(wbTgt, changed)
+                    If InStr(1, oneLog, "PROBLEM:", vbTextCompare) = 0 Then
+                        stepLog = CopyHeadersFootersTo(wbSrc, wbTgt, imgPath, imgW, imgH)
+                        oneLog = oneLog & "4. " & stepLog
+                        If InStr(1, stepLog, "PROBLEM:", vbTextCompare) = 0 Then
+                            oneLog = oneLog & "5. " & TidySheetsIn(wbTgt)
+                        End If
                     End If
                 End If
 
@@ -1649,6 +1657,103 @@ Private Function CheckRename(ByVal folderPath As String, ByVal old As String, _
     If IsWorkbookOpen(old) Then _
         CheckRename = CheckRename & "'" & old & "' is open - close it first. "
 End Function
+
+
+' ===========================================================================
+' Title block - draw the block and notes box on the ticked schedules
+'
+' So nobody merges cells by hand: the block is fitted to each schedule's own
+' columns, the notes box is merged across the full width, and both go in the
+' print titles so every printed page carries them. A schedule with no block
+' gets one. See BuildTitleBlocks in modSchedule for exactly what it does and
+' what makes it stop.
+' ===========================================================================
+Public Sub DrawTitleBlocks()
+    Dim wsSetup As Worksheet
+    Dim folderPath As String, fileName As String
+    Dim wbTgt As Workbook
+    Dim files As Collection, i As Long
+    Dim isAll As Boolean, leftOut As String
+    Dim backupDir As String
+    Dim done As Long, skipped As Long, failed As Long
+    Dim started As Double
+    Dim oneLog As String
+    Dim changed As Long
+    Const JOB As String = "Title block"
+
+    Set wsSetup = GetSheet(ThisWorkbook, SH_SETUP)
+    If wsSetup Is Nothing Then
+        MsgBox "No Setup sheet. Run InstallTool first.", vbExclamation
+        Exit Sub
+    End If
+
+    folderPath = SchedulesFolder()
+    If Len(folderPath) = 0 Then Exit Sub
+
+    Set files = TargetFiles(folderPath, "", isAll, leftOut)
+    If files.Count = 0 Then
+        MsgBox "Nothing to do." & vbCrLf & vbCrLf & leftOut, vbInformation, JOB
+        Exit Sub
+    End If
+
+    If Not Confirmed("Draw the title block on " & ScopeText(files, isAll, leftOut) & vbCrLf & _
+              "Rows 1-4 of each schedule sheet are redrawn to fit its columns, the " & _
+              "General Notes box is merged across the full width, and both are set " & _
+              "to print on every page. The notes text itself is not changed." & vbCrLf & vbCrLf & _
+              "A schedule with no title block gets one: 12 rows are inserted above it " & _
+              "for the block and an empty notes box." & vbCrLf & vbCrLf & _
+              "A sheet whose top rows hold anything the tool does not recognise is " & _
+              "left alone and named on the Log sheet." & vbCrLf & vbCrLf & _
+              BackupLine(wsSetup) & vbCrLf & vbCrLf & "Continue?", JOB, isAll) Then Exit Sub
+
+    backupDir = MakeBackupDir(wsSetup, folderPath)
+
+    On Error GoTo Fail
+    LogStart JOB
+    BeginQuiet xlCalculationAutomatic
+    ProgressStart files.Count, "Drawing title blocks"
+    started = Timer
+
+    For i = 1 To files.Count
+        fileName = files(i)
+        ProgressStep i - 1, fileName
+
+        If Not OpenInExcel(fileName, skipped) Then
+            BackUp backupDir, folderPath, fileName
+            Set wbTgt = OpenQuiet(EndSep(folderPath) & fileName, False)
+            If wbTgt Is Nothing Then
+                failed = failed + 1
+                LogLine fileName, "FAILED", "Could not open the file."
+            Else
+                oneLog = BuildTitleBlocks(wbTgt, changed)
+                If InStr(1, oneLog, "PROBLEM:", vbTextCompare) > 0 Then
+                    wbTgt.Close SaveChanges:=False
+                    failed = failed + 1
+                    LogLine fileName, "FAILED", oneLog & "Nothing was saved."
+                ElseIf changed = 0 Then
+                    wbTgt.Close SaveChanges:=False
+                    skipped = skipped + 1
+                    LogLine fileName, "Unchanged", "Already right. " & oneLog
+                Else
+                    wbTgt.Close SaveChanges:=True
+                    done = done + 1
+                    LogLine fileName, "OK", oneLog
+                End If
+                Set wbTgt = Nothing
+            End If
+        End If
+    Next i
+
+    ProgressDone
+    EndQuiet
+    ShowSummary JOB, done, skipped, failed, Timer - started, _
+                "Check one print preview: page 2 onwards should carry the block and the notes." & _
+                vbCrLf & vbCrLf & IIf(Len(backupDir) > 0, "Backup: " & backupDir, "")
+    Exit Sub
+
+Fail:
+    Recover JOB, wbTgt
+End Sub
 
 
 ' ===========================================================================
@@ -2906,8 +3011,8 @@ Private Sub BuildSetupSheet(ByVal ws As Worksheet)
     Note ws.Range("I6"), "2. Refresh schedule list."
     Note ws.Range("I7"), "3. Put an x next to it."
     Note ws.Range("I8"), "4. Press the button above."
-    Note ws.Range("I10"), "Does cover, links, headers and order"
-    Note ws.Range("I11"), "in one go, for the ticked rows only."
+    Note ws.Range("I10"), "Does cover, links, title block, headers"
+    Note ws.Range("I11"), "and order in one go, ticked rows only."
 
     Note ws.Range("H16"), "WHICH SCHEDULES: every button works on the rows with an x in column A of ScheduleList."
     Note ws.Range("H17"), "Nothing ticked means all of them, and the button says ALL and defaults to No first."
@@ -2918,6 +3023,7 @@ Private Sub BuildSetupSheet(ByVal ws As Worksheet)
     Note ws.Range("H24"), "The Classification column on ScheduleList shows what each file is really marked, footers included."
     Note ws.Range("H26"), "'Copy headers & footers' and 'Copy cover & revision page' copy from the Reference schedule."
     Note ws.Range("H27"), "Click a file name on ScheduleList to open it. Buttons leave a file you have open alone."
+    Note ws.Range("H28"), "'Title block' fits the block and notes to each schedule's columns. No merging by hand."
     Note ws.Range("H29"), "Cells shaded yellow are the ones you fill in. Progress shows in the status bar, bottom left."
     Note ws.Range("H30"), "Every run writes a line per file to the Log sheet, then a summary."
     Note ws.Range("H31"), "Schedule tool version " & TOOL_VERSION
@@ -3233,8 +3339,9 @@ Private Sub BuildButtons(ByVal ws As Worksheet)
     ButtonAt ws, "J", 4, "SetClassification", "Set classification"
     ButtonAt ws, "J", 6, "CopyHeadersFooters", "Copy headers && footers"
     ButtonAt ws, "J", 8, "CopyCommonSheets", "Copy cover && revision page"
-    ButtonAt ws, "J", 10, "TidySheets", "Tidy sheets"
-    ButtonAt ws, "J", 12, "RenameFiles", "Rename files"
+    ButtonAt ws, "J", 10, "DrawTitleBlocks", "Title block"
+    ButtonAt ws, "J", 12, "TidySheets", "Tidy sheets"
+    ButtonAt ws, "J", 14, "RenameFiles", "Rename files"
 End Sub
 
 

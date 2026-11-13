@@ -32,6 +32,22 @@ Private Const KEEP_LABELS As String = _
 Private Const MARKINGS As String = _
     "OFFICIAL[- ]SENSITIVE|COMMERCIAL IN CONFIDENCE|TOP SECRET|SECRET|CONFIDENTIAL|RESTRICTED|OFFICIAL"
 
+' The title block the tool draws at the top of a schedule sheet. Matches the
+' project template: four rows in three groups of merged cells, Verdana 7 with
+' thin borders, a gap, then the General Notes box merged across the full
+' width. All of it sits in the print titles so it repeats on every page.
+Private Const TB_ROWS       As Long = 4       ' the block is rows 1 to 4
+Private Const TB_NOTES_TOP  As Long = 6       ' a notes box the tool adds starts here
+Private Const TB_NOTES_ROWS As Long = 6       ' ...and is this many rows tall
+Private Const TB_INSERT     As Long = 12      ' rows added above a bare schedule
+Private Const TB_FONT       As String = "Verdana"
+Private Const TB_SIZE       As Double = 7
+Private Const TB_TITLE_H    As Double = 20.1  ' row 1
+Private Const TB_ROW_H      As Double = 9.9   ' rows 2 to 4, and the added rows
+' Verdana 7 in capitals, in Excel column-width units per character. Only used
+' to decide where the three groups split and to warn when text will not fit.
+Private Const TB_CHAR_W     As Double = 0.85
+
 
 ' A schedule's revision history, lifted out before its sheet is replaced.
 Private Type RevData
@@ -2601,4 +2617,605 @@ Private Function SortedKeys(ByVal d As Object, ByVal sep As String) As String
         If i > 1 Then SortedKeys = SortedKeys & sep
         SortedKeys = SortedKeys & ks(i)
     Next i
+End Function
+
+
+' ===========================================================================
+' Title block on the schedule sheet
+'
+' Draws the block at the top of every schedule sheet so nobody merges cells
+' by hand:
+'
+'     | SCHEDULE OF ...  | DOCUMENTS REFERENCE: ...  |                     |
+'     | CLIENT: ...      | PURPOSE OF DOCUMENT: ...  | REVISION: ...       |
+'     | PROJECT: ...     | PROJECT NUMBER: ...       | REVISION DATE: ...  |
+'     | PREPARED BY: ... | CHECKED BY: ...           | APPROVED BY: ...    |
+'
+'     | General Notes: ... merged across the full width                   |
+'
+' Every value is a live formula on the local Metadata sheet, as before.
+'
+' The block spans the schedule's own columns: the print area if one is set,
+' otherwise the rightmost column with anything in it below the block. Where
+' the three groups split is kept from the existing block when the columns
+' still fit it, so a schedule does not change shape every time it is
+' repaired. Otherwise the splits are worked out from the column widths and
+' how long each group's text is.
+'
+' A schedule with no block gets one: 12 rows are inserted above it, for the
+' block, a gap, an empty General Notes box and a gap. Formulas, the print
+' area and the print titles below move down with them, as Excel does for any
+' inserted row.
+'
+' Never guesses at something it does not recognise. Rows 1 to 4 holding text
+' that is neither a title block label nor the schedule title, or title block
+' labels anywhere other than rows 1 to 4, leave the sheet as it is with a
+' PROBLEM saying why.
+' ===========================================================================
+
+' Every visible schedule sheet in the workbook. `changed` counts sheets
+' actually changed, so a workbook already right is not saved.
+Public Function BuildTitleBlocks(ByVal wb As Workbook, ByRef changed As Long) As String
+    Dim ws As Worksheet, wsMeta As Worksheet
+    Dim log As String
+    Dim n As Long
+
+    changed = 0
+    Set wsMeta = GetSheet(wb, SH_META)
+    If wsMeta Is Nothing Then
+        BuildTitleBlocks = "PROBLEM: no Metadata sheet, so there is nothing for the title " & _
+                           "block to read. Run 'Set up / repair links' on it first. "
+        Exit Function
+    End If
+
+    For Each ws In wb.Worksheets
+        If Not IsCommonSheet(ws) And ws.Visible = xlSheetVisible Then
+            If HasSomethingToPrint(ws) Then
+                n = n + 1
+                log = log & BuildTitleBlock(ws, wsMeta, changed)
+            End If
+        End If
+    Next ws
+
+    If n = 0 Then log = "No schedule sheet with anything on it. "
+    BuildTitleBlocks = log
+End Function
+
+
+Private Function BuildTitleBlock(ByVal ws As Worksheet, ByVal wsMeta As Worksheet, _
+                                 ByRef changed As Long) As String
+    Dim who As String, stray As String, warn As String, log As String
+    Dim found As Long
+    Dim notesTop As Long, notesBot As Long
+    Dim lastCol As Long, edge As Long
+    Dim end1 As Long, end2 As Long
+    Dim bare As Boolean
+    Dim titleRows As String
+
+    who = "'" & ws.Name & "': "
+    On Error GoTo Failed
+
+    ' --- what is there now ------------------------------------------------
+    found = TitleLabelsIn(ws, wsMeta, 1, TB_ROWS, stray)
+    If found = 0 Then
+        If TitleLabelsIn(ws, wsMeta, 1, TITLE_BLOCK_ROWS + TB_INSERT, stray) > 0 Then
+            BuildTitleBlock = "PROBLEM: " & who & "has title block labels below row " & _
+                TB_ROWS & ", so its layout is not the standard one. Left alone. "
+            Exit Function
+        End If
+        bare = True
+    ElseIf Len(stray) > 0 Then
+        BuildTitleBlock = "PROBLEM: " & who & "rows 1-" & TB_ROWS & " hold something " & _
+            "that is not part of a title block (" & Left$(stray, 80) & "). Left alone. "
+        Exit Function
+    ElseIf found < 6 Then
+        BuildTitleBlock = "PROBLEM: " & who & "only " & found & " title block labels in " & _
+            "rows 1-" & TB_ROWS & ", too few to be sure it is one. Left alone. "
+        Exit Function
+    End If
+
+    ' --- a bare schedule gets the rows to put it in -------------------------
+    If bare Then
+        ws.Rows("1:" & TB_INSERT).Insert Shift:=xlDown
+        ws.Rows("1:" & TB_INSERT).ClearFormats
+        notesTop = TB_NOTES_TOP
+        notesBot = TB_NOTES_TOP + TB_NOTES_ROWS - 1
+        With ws.Cells(notesTop, 1)
+            .Value = "General Notes:" & vbLf & "[1] "
+            .Font.Name = TB_FONT
+            .Font.Size = TB_SIZE
+        End With
+        ws.Range(ws.Rows(TB_ROWS + 1), ws.Rows(TB_INSERT)).RowHeight = TB_ROW_H
+        log = log & "Added a title block and an empty General Notes box above the " & _
+                    "schedule (" & TB_INSERT & " rows inserted). "
+        changed = changed + 1
+    Else
+        FindNotes ws, notesTop, notesBot
+    End If
+
+    ' --- how wide, and where the groups split -------------------------------
+    lastCol = TableRightEdge(ws, IIf(notesBot > 0, notesBot + 1, TB_ROWS + 1))
+    If lastCol < 3 Then
+        BuildTitleBlock = log & "PROBLEM: " & who & "the schedule is fewer than 3 columns " & _
+                          "wide, too narrow for the title block. "
+        Exit Function
+    End If
+
+    edge = OldBlockEdge(ws, notesTop, notesBot)
+    If edge < lastCol Then edge = lastCol
+
+    If Not ExistingSplits(ws, wsMeta, lastCol, end1, end2) Then
+        PlanSplits ws, wsMeta, lastCol, end1, end2
+    End If
+    warn = FitWarning(ws, wsMeta, lastCol, end1, end2)
+
+    ' --- write it, unless it is already exactly this -----------------------
+    If bare Or Not BlockIsCurrent(ws, wsMeta, lastCol, end1, end2, notesTop, notesBot) Then
+        WriteBlock ws, wsMeta, edge, lastCol, end1, end2
+        If notesTop > 0 Then WriteNotesBox ws, notesTop, notesBot, edge, lastCol
+        If Not bare Then
+            log = log & "Title block redrawn across columns A-" & ColLetter(lastCol) & "" & _
+                        IIf(notesTop > 0, ", notes box with it", "") & ". "
+            changed = changed + 1
+        End If
+    End If
+
+    If notesTop = 0 Then
+        log = log & "No General Notes box found under the block, so none was widened " & _
+                    "(the tool only adds one to a schedule that has no title block). "
+    End If
+
+    ' --- every page carries the block and the notes ------------------------
+    titleRows = WantedTitleRows(ws, IIf(notesBot > 0, notesBot, TB_ROWS))
+    If StrComp(Replace(ws.PageSetup.PrintTitleRows, "$", ""), _
+               Replace(titleRows, "$", ""), vbTextCompare) <> 0 Then
+        ws.PageSetup.PrintTitleRows = titleRows
+        log = log & "Print titles set to rows " & Replace(Replace(titleRows, "$", ""), ":", "-") & _
+                    ", so the block and notes repeat on every page. "
+        changed = changed + 1
+    End If
+    If bare Then
+        log = log & "Check the print titles also take in the schedule's own column " & _
+                    "headings, under Page Layout > Print Titles. "
+    End If
+
+    If Not HasPageNumber(ws.PageSetup) Then
+        If Len(ws.PageSetup.RightFooter) = 0 Then
+            ws.PageSetup.RightFooter = "Page &P of &N"
+            log = log & "Added 'Page X of Y' to the right footer. "
+            changed = changed + 1
+        Else
+            log = log & "No page number, and the right footer is already in use, so " & _
+                        "none was added. "
+        End If
+    End If
+
+    If Len(warn) > 0 Then log = log & warn
+    If Len(log) > 0 Then log = who & log
+    BuildTitleBlock = log
+    Exit Function
+
+Failed:
+    BuildTitleBlock = log & "PROBLEM: " & who & "error " & Err.Number & " - " & _
+                      Err.Description & " (is the sheet protected?). "
+End Function
+
+
+' The text of each block cell, row r (1-4) and group g (1-3). `metaRow` 0
+' means the cell is left empty.
+Private Sub BlockField(ByVal r As Long, ByVal g As Long, ByRef canonical As String, _
+                       ByRef metaRow As Long, ByRef asDate As Boolean)
+    canonical = "": metaRow = 0: asDate = False
+    Select Case r * 10 + g
+        Case 11: metaRow = 3                       ' the schedule title, no label
+        Case 12: canonical = "DOCUMENTS REFERENCE": metaRow = 2
+        Case 21: canonical = "CLIENT": metaRow = 6
+        Case 22: canonical = "PURPOSE OF DOCUMENT": metaRow = 13
+        Case 23: canonical = "REVISION": metaRow = 8
+        Case 31: canonical = "PROJECT": metaRow = 4
+        Case 32: canonical = "PROJECT NUMBER": metaRow = 5
+        Case 33: canonical = "REVISION DATE": metaRow = 9: asDate = True
+        Case 41: canonical = "PREPARED BY": metaRow = 10
+        Case 42: canonical = "CHECKED BY": metaRow = 11
+        Case 43: canonical = "APPROVED BY": metaRow = 12
+    End Select
+End Sub
+
+
+Private Function BlockFormula(ByVal wsMeta As Worksheet, ByVal r As Long, ByVal g As Long) As String
+    Dim canonical As String, metaRow As Long, asDate As Boolean
+    BlockField r, g, canonical, metaRow, asDate
+    If metaRow = 0 Then Exit Function
+    If Len(canonical) = 0 Then
+        BlockFormula = "=" & SheetRef(wsMeta.Name) & "!B" & metaRow
+    Else
+        BlockFormula = TitleBlockFormula(wsMeta, canonical, metaRow, asDate)
+    End If
+End Function
+
+
+' What the cell will read, for working out widths.
+Private Function BlockText(ByVal wsMeta As Worksheet, ByVal r As Long, ByVal g As Long) As String
+    Dim canonical As String, metaRow As Long, asDate As Boolean
+    BlockField r, g, canonical, metaRow, asDate
+    If metaRow = 0 Then Exit Function
+    BlockText = AsText(CellValue(wsMeta.Cells(metaRow, 2)))
+    If Len(canonical) > 0 Then BlockText = canonical & ": " & BlockText
+End Function
+
+
+' Title block labels among the cells of rows r1 to r2. `stray` collects any
+' other text in those rows that is not the schedule title.
+Private Function TitleLabelsIn(ByVal ws As Worksheet, ByVal wsMeta As Worksheet, _
+                               ByVal r1 As Long, ByVal r2 As Long, ByRef stray As String) As Long
+    Dim r As Long, c As Long
+    Dim cell As Range
+    Dim v As String, f As String
+    Dim metaRow As Long, asDate As Boolean
+    Dim title As String
+
+    stray = ""
+    title = AsText(CellValue(wsMeta.Range("B3")))
+
+    For r = r1 To r2
+        For c = 1 To TITLE_BLOCK_COLS
+            Set cell = ws.Cells(r, c)
+            If cell.Address = cell.MergeArea.Cells(1, 1).Address Then
+                v = AsText(CellValue(cell))
+                If Len(v) > 0 Then
+                    metaRow = 0
+                    If InStr(v, ":") > 0 Then TitleBlockField LabelKey(v), metaRow, asDate
+                    If metaRow > 0 Then
+                        TitleLabelsIn = TitleLabelsIn + 1
+                    Else
+                        f = CellFormula(cell)
+                        If StrComp(v, title, vbTextCompare) = 0 _
+                           Or StrComp(Left$(v, 11), "SCHEDULE OF", vbTextCompare) = 0 _
+                           Or InStr(1, Replace(f, "'", ""), SH_META & "!B3", vbTextCompare) > 0 Then
+                            ' the schedule title
+                        Else
+                            stray = stray & v & "; "
+                        End If
+                    End If
+                End If
+            End If
+        Next c
+    Next r
+End Function
+
+
+' The General Notes box under the block: a cell in column A, in the few rows
+' after the block, whose text starts "General Notes" or "Notes". Only a merged
+' box counts; notes typed down separate rows are left as they are.
+Private Sub FindNotes(ByVal ws As Worksheet, ByRef notesTop As Long, ByRef notesBot As Long)
+    Dim r As Long
+    Dim v As String
+    Dim area As Range
+
+    notesTop = 0: notesBot = 0
+    For r = TB_ROWS + 1 To TB_ROWS + 4
+        v = UCase$(Trim$(AsText(CellValue(ws.Cells(r, 1)))))
+        If Left$(v, 13) = "GENERAL NOTES" Or Left$(v, 5) = "NOTES" Then
+            Set area = ws.Cells(r, 1).MergeArea
+            If area.Cells.Count > 1 Then
+                notesTop = area.Row
+                notesBot = area.Row + area.Rows.Count - 1
+            End If
+            Exit Sub
+        End If
+    Next r
+End Sub
+
+
+' The last column of the schedule itself: the print area's if one is set,
+' otherwise the rightmost column with anything in it from `fromRow` down.
+Private Function TableRightEdge(ByVal ws As Worksheet, ByVal fromRow As Long) As Long
+    Dim pa As String
+    Dim area As Range
+    Dim ur As Range
+    Dim lastRow As Long, c As Long
+
+    On Error Resume Next
+    pa = ws.PageSetup.PrintArea
+    On Error GoTo 0
+    If Len(pa) > 0 Then
+        For Each area In ws.Range(pa).Areas
+            If area.Column + area.Columns.Count - 1 > TableRightEdge Then _
+                TableRightEdge = area.Column + area.Columns.Count - 1
+        Next area
+        Exit Function
+    End If
+
+    Set ur = ws.UsedRange
+    lastRow = ur.Row + ur.Rows.Count - 1
+    If fromRow > lastRow Then Exit Function
+
+    For c = ur.Column + ur.Columns.Count - 1 To 1 Step -1
+        If Application.WorksheetFunction.CountA( _
+               ws.Range(ws.Cells(fromRow, c), ws.Cells(lastRow, c))) > 0 Then
+            TableRightEdge = c
+            Exit Function
+        End If
+    Next c
+End Function
+
+
+' How far right the current block and notes box reach, so a block that is
+' getting narrower has its old right-hand part cleared too.
+Private Function OldBlockEdge(ByVal ws As Worksheet, ByVal notesTop As Long, _
+                              ByVal notesBot As Long) As Long
+    Dim r As Long, c As Long, lastR As Long
+    Dim cell As Range
+    Dim reach As Long
+
+    lastR = TB_ROWS
+    If notesTop > 0 Then lastR = notesBot
+    For r = 1 To lastR
+        For c = 1 To TITLE_BLOCK_COLS
+            Set cell = ws.Cells(r, c)
+            reach = 0
+            If cell.MergeCells Then reach = cell.MergeArea.Column + cell.MergeArea.Columns.Count - 1
+            If Len(AsText(CellValue(cell))) > 0 And c > reach Then reach = c
+            If reach > OldBlockEdge Then OldBlockEdge = reach
+        Next c
+    Next r
+End Function
+
+
+' The splits the block already has, taken from row 2. Kept when the block
+' still spans exactly the schedule's columns and its text fits, so a repair
+' does not reshape a block somebody has already got looking right.
+Private Function ExistingSplits(ByVal ws As Worksheet, ByVal wsMeta As Worksheet, _
+                                ByVal lastCol As Long, ByRef end1 As Long, _
+                                ByRef end2 As Long) As Boolean
+    Dim a As Range, b As Range, c As Range
+
+    On Error GoTo Nope
+    Set a = ws.Cells(2, 1).MergeArea
+    end1 = a.Column + a.Columns.Count - 1
+    If end1 >= lastCol - 1 Then GoTo Nope
+    Set b = ws.Cells(2, end1 + 1).MergeArea
+    end2 = b.Column + b.Columns.Count - 1
+    If end2 >= lastCol Then GoTo Nope
+    Set c = ws.Cells(2, end2 + 1).MergeArea
+    If c.Column + c.Columns.Count - 1 <> lastCol Then GoTo Nope
+
+    ExistingSplits = (Len(FitWarning(ws, wsMeta, lastCol, end1, end2)) = 0)
+    Exit Function
+
+Nope:
+    end1 = 0: end2 = 0
+End Function
+
+
+' New splits: the columns divided so each group gets a share of the width in
+' proportion to its longest line of text, and never fewer than one column.
+Private Sub PlanSplits(ByVal ws As Worksheet, ByVal wsMeta As Worksheet, _
+                       ByVal lastCol As Long, ByRef end1 As Long, ByRef end2 As Long)
+    Dim need(1 To 3) As Double
+    Dim cum() As Double
+    Dim total As Double, t1 As Double, t2 As Double, best As Double
+    Dim c As Long
+
+    GroupNeeds wsMeta, need
+    ReDim cum(0 To lastCol)
+    For c = 1 To lastCol
+        cum(c) = cum(c - 1) + ColWidth(ws, c)
+    Next c
+    total = need(1) + need(2) + need(3)
+    t1 = cum(lastCol) * need(1) / total
+    t2 = cum(lastCol) * (need(1) + need(2)) / total
+
+    end1 = 1
+    best = Abs(cum(1) - t1)
+    For c = 2 To lastCol - 2
+        If Abs(cum(c) - t1) < best Then best = Abs(cum(c) - t1): end1 = c
+    Next c
+
+    end2 = end1 + 1
+    best = Abs(cum(end2) - t2)
+    For c = end1 + 2 To lastCol - 1
+        If Abs(cum(c) - t2) < best Then best = Abs(cum(c) - t2): end2 = c
+    Next c
+End Sub
+
+
+' A line for the log when a group is narrower than its text, or "".
+Private Function FitWarning(ByVal ws As Worksheet, ByVal wsMeta As Worksheet, _
+                            ByVal lastCol As Long, ByVal end1 As Long, _
+                            ByVal end2 As Long) As String
+    Dim need(1 To 3) As Double, have(1 To 3) As Double
+    Dim c As Long, g As Long
+    Dim tight As String
+
+    GroupNeeds wsMeta, need
+    For c = 1 To lastCol
+        If c <= end1 Then
+            g = 1
+        ElseIf c <= end2 Then
+            g = 2
+        Else
+            g = 3
+        End If
+        have(g) = have(g) + ColWidth(ws, c)
+    Next c
+
+    For g = 1 To 3
+        If have(g) < need(g) Then tight = tight & IIf(Len(tight) > 0, ", ", "") & Choose(g, "left", "middle", "right")
+    Next g
+    If Len(tight) > 0 Then
+        FitWarning = "The " & tight & " part of the title block may be too narrow for its " & _
+                     "text; check a print preview. "
+    End If
+End Function
+
+
+Private Sub GroupNeeds(ByVal wsMeta As Worksheet, ByRef need() As Double)
+    Dim r As Long, g As Long
+    Dim n As Double
+    For g = 1 To 3
+        need(g) = 0
+        For r = 1 To TB_ROWS
+            n = Len(BlockText(wsMeta, r, g)) * TB_CHAR_W + 2
+            If n > need(g) Then need(g) = n
+        Next r
+    Next g
+End Sub
+
+
+Private Function ColWidth(ByVal ws As Worksheet, ByVal c As Long) As Double
+    If ws.Columns(c).Hidden Then Exit Function
+    ColWidth = ws.Columns(c).ColumnWidth
+End Function
+
+
+' True when the block, notes box and their merges are already exactly what
+' would be written, styling included, so an untouched schedule is not saved
+' for nothing and one drawn in a different style is brought into line.
+Private Function BlockIsCurrent(ByVal ws As Worksheet, ByVal wsMeta As Worksheet, _
+                                ByVal lastCol As Long, ByVal end1 As Long, ByVal end2 As Long, _
+                                ByVal notesTop As Long, ByVal notesBot As Long) As Boolean
+    Dim r As Long, g As Long
+    Dim c1 As Long, c2 As Long
+    Dim want As Range
+
+    On Error GoTo Nope
+    For r = 1 To TB_ROWS
+        For g = 1 To 3
+            GroupCols g, lastCol, end1, end2, c1, c2
+            Set want = ws.Range(ws.Cells(r, c1), ws.Cells(r, c2))
+            If ws.Cells(r, c1).MergeArea.Address <> want.Address Then GoTo Nope
+            If StrComp(Replace(CellFormula(ws.Cells(r, c1)), "'", ""), _
+                       Replace(BlockFormula(wsMeta, r, g), "'", ""), vbTextCompare) <> 0 Then GoTo Nope
+            With ws.Cells(r, c1)
+                If .Font.Name <> TB_FONT Or .Font.Size <> TB_SIZE Then GoTo Nope
+                If .HorizontalAlignment <> xlCenter Then GoTo Nope
+                If .Interior.ColorIndex <> xlColorIndexNone Then GoTo Nope
+            End With
+        Next g
+    Next r
+    If notesTop > 0 Then
+        Set want = ws.Range(ws.Cells(notesTop, 1), ws.Cells(notesBot, lastCol))
+        If ws.Cells(notesTop, 1).MergeArea.Address <> want.Address Then GoTo Nope
+    End If
+    BlockIsCurrent = True
+Nope:
+End Function
+
+
+Private Sub GroupCols(ByVal g As Long, ByVal lastCol As Long, ByVal end1 As Long, _
+                      ByVal end2 As Long, ByRef c1 As Long, ByRef c2 As Long)
+    Select Case g
+        Case 1: c1 = 1: c2 = end1
+        Case 2: c1 = end1 + 1: c2 = end2
+        Case Else: c1 = end2 + 1: c2 = lastCol
+    End Select
+End Sub
+
+
+' Rows 1-4 cleared out to `edge` and drawn again. Only title block cells are
+' ever here: anything else stopped the build before this point.
+Private Sub WriteBlock(ByVal ws As Worksheet, ByVal wsMeta As Worksheet, ByVal edge As Long, _
+                       ByVal lastCol As Long, ByVal end1 As Long, ByVal end2 As Long)
+    Dim r As Long, g As Long
+    Dim c1 As Long, c2 As Long
+    Dim rng As Range
+    Dim f As String
+
+    With ws.Range(ws.Cells(1, 1), ws.Cells(TB_ROWS, edge))
+        .UnMerge
+        .Clear
+    End With
+
+    For r = 1 To TB_ROWS
+        For g = 1 To 3
+            GroupCols g, lastCol, end1, end2, c1, c2
+            Set rng = ws.Range(ws.Cells(r, c1), ws.Cells(r, c2))
+            If rng.Cells.Count > 1 Then rng.Merge
+            f = BlockFormula(wsMeta, r, g)
+            If Len(f) > 0 Then PutFormula rng.Cells(1, 1), f
+
+            With rng
+                .Font.Name = TB_FONT
+                .Font.Size = TB_SIZE
+                .Font.Bold = False
+                .HorizontalAlignment = xlCenter
+                .VerticalAlignment = xlCenter
+                .WrapText = False
+            End With
+            BoxBorder rng
+        Next g
+    Next r
+
+    ws.Rows(1).RowHeight = TB_TITLE_H
+    ws.Range(ws.Rows(2), ws.Rows(TB_ROWS)).RowHeight = TB_ROW_H
+End Sub
+
+
+' The notes box merged across the full width. Its text is not rewritten, so
+' any bold or line breaks in it survive: the old merge is undone (the text
+' stays in its top-left cell) and the new, wider one made around it.
+Private Sub WriteNotesBox(ByVal ws As Worksheet, ByVal notesTop As Long, ByVal notesBot As Long, _
+                          ByVal edge As Long, ByVal lastCol As Long)
+    Dim rng As Range
+
+    With ws.Range(ws.Cells(notesTop, 1), ws.Cells(notesBot, edge))
+        .UnMerge
+        .Borders.LineStyle = xlNone
+    End With
+
+    Set rng = ws.Range(ws.Cells(notesTop, 1), ws.Cells(notesBot, lastCol))
+    rng.Merge
+    With rng
+        .HorizontalAlignment = xlLeft
+        .VerticalAlignment = xlTop
+        .WrapText = True
+    End With
+    BoxBorder rng
+End Sub
+
+
+Private Sub BoxBorder(ByVal rng As Range)
+    Dim side As Variant
+    For Each side In Array(xlEdgeLeft, xlEdgeTop, xlEdgeRight, xlEdgeBottom)
+        With rng.Borders(side)
+            .LineStyle = xlContinuous
+            .Weight = xlThin
+            .ColorIndex = xlColorIndexAutomatic
+        End With
+    Next side
+End Sub
+
+
+' "$1:$n", where n is the end of the notes (or of the block), or further down
+' when the print titles already reached further, which is where a schedule's
+' own column headings are.
+Private Function WantedTitleRows(ByVal ws As Worksheet, ByVal minLast As Long) As String
+    Dim cur As String
+    Dim lastNow As Long
+    Dim p As Long
+
+    cur = Replace(ws.PageSetup.PrintTitleRows, "$", "")
+    p = InStrRev(cur, ":")
+    If p > 0 Then cur = Mid$(cur, p + 1)
+    If IsNumeric(cur) Then lastNow = CLng(cur)
+
+    If lastNow < minLast Then lastNow = minLast
+    WantedTitleRows = "$1:$" & lastNow
+End Function
+
+
+Private Function HasPageNumber(ByVal ps As PageSetup) As Boolean
+    Dim i As Long
+    For i = 1 To 6
+        If InStr(1, HFSection(ps, i), "&P", vbBinaryCompare) > 0 Then
+            HasPageNumber = True
+            Exit Function
+        End If
+    Next i
+End Function
+
+
+Private Function ColLetter(ByVal c As Long) As String
+    ColLetter = Split(Cells(1, c).Address(True, False), "$")(0)
 End Function
