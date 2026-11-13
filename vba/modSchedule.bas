@@ -32,21 +32,39 @@ Private Const KEEP_LABELS As String = _
 Private Const MARKINGS As String = _
     "OFFICIAL[- ]SENSITIVE|COMMERCIAL IN CONFIDENCE|TOP SECRET|SECRET|CONFIDENTIAL|RESTRICTED|OFFICIAL"
 
-' The title block the tool draws at the top of a schedule sheet. Matches the
-' project template: four rows in three groups of merged cells, Verdana 7 with
-' thin borders, a gap, then the General Notes box merged across the full
+' The title block the tool draws at the top of a schedule sheet: the project
+' template's four rows in three groups of merged cells, the same fields in the
+' same places, then a gap and the General Notes box merged across the full
 ' width. All of it sits in the print titles so it repeats on every page.
+'
+' Styled for reading on paper: the schedule title larger and bold, the three
+' groups aligned left / centre / right rather than each in its own box, one
+' box round the whole block with a rule under the title row.
 Private Const TB_ROWS       As Long = 4       ' the block is rows 1 to 4
 Private Const TB_NOTES_TOP  As Long = 6       ' a notes box the tool adds starts here
 Private Const TB_NOTES_ROWS As Long = 6       ' ...and is this many rows tall
 Private Const TB_INSERT     As Long = 12      ' rows added above a bare schedule
 Private Const TB_FONT       As String = "Verdana"
-Private Const TB_SIZE       As Double = 7
-Private Const TB_TITLE_H    As Double = 20.1  ' row 1
-Private Const TB_ROW_H      As Double = 9.9   ' rows 2 to 4, and the added rows
-' Verdana 7 in capitals, in Excel column-width units per character. Only used
-' to decide where the three groups split and to warn when text will not fit.
-Private Const TB_CHAR_W     As Double = 0.85
+Private Const TB_ROW_H      As Double = 9.9   ' rows the tool inserts, before sizing
+
+' Font sizes as they come out ON PAPER. Excel shrinks a wide schedule to fit
+' the page, and the title block shrinks with it, which is how a 7pt block
+' printed at 3pt on the widest schedules. So the sizes in the sheet are these
+' divided by how far Excel will shrink that sheet (see PrintScale), and every
+' schedule prints its block and notes at the same size.
+Private Const TB_TITLE_PT   As Double = 11    ' the schedule title
+Private Const TB_BODY_PT    As Double = 7.5   ' every other block cell
+Private Const TB_NOTES_PT   As Double = 7     ' the General Notes text
+Private Const TB_MAX_PT     As Double = 60    ' never larger than this in the sheet
+
+' Verdana 7 in capitals, in Excel column-width units per character, on the
+' generous side. Only used to decide where the three groups split and to warn
+' when text will not fit; Shrink to fit on the cells catches the rest.
+Private Const TB_CHAR_W     As Double = 1
+
+' The enlargement for the sheet being worked on (1 / its print scale), so the
+' width estimates allow for the larger font. Set by BuildTitleBlock.
+Private mTbGrow As Double
 
 
 ' A schedule's revision history, lifted out before its sheet is replaced.
@@ -2723,7 +2741,7 @@ Private Function BuildTitleBlock(ByVal ws As Worksheet, ByVal wsMeta As Workshee
         With ws.Cells(notesTop, 1)
             .Value = "General Notes:" & vbLf & "[1] "
             .Font.Name = TB_FONT
-            .Font.Size = TB_SIZE
+            .Font.Size = TB_NOTES_PT
         End With
         ws.Range(ws.Rows(TB_ROWS + 1), ws.Rows(TB_INSERT)).RowHeight = TB_ROW_H
         log = log & "Added a title block and an empty General Notes box above the " & _
@@ -2743,6 +2761,9 @@ Private Function BuildTitleBlock(ByVal ws As Worksheet, ByVal wsMeta As Workshee
 
     edge = OldBlockEdge(ws, notesTop, notesBot)
     If edge < lastCol Then edge = lastCol
+
+    mTbGrow = 1 / PrintScale(ws, lastCol)
+    If mTbGrow < 1 Then mTbGrow = 1
 
     If Not ExistingSplits(ws, wsMeta, lastCol, end1, end2) Then
         PlanSplits ws, wsMeta, lastCol, end1, end2
@@ -2764,6 +2785,9 @@ Private Function BuildTitleBlock(ByVal ws As Worksheet, ByVal wsMeta As Workshee
         log = log & "No General Notes box found under the block, so none was widened " & _
                     "(the tool only adds one to a schedule that has no title block). "
     End If
+
+    ' --- the same size on paper as every other schedule ---------------------
+    log = log & SizeBlock(ws, lastCol, notesTop, notesBot, changed)
 
     ' --- every page carries the block and the notes ------------------------
     titleRows = WantedTitleRows(ws, IIf(notesBot > 0, notesBot, TB_ROWS))
@@ -3053,10 +3077,13 @@ End Function
 Private Sub GroupNeeds(ByVal wsMeta As Worksheet, ByRef need() As Double)
     Dim r As Long, g As Long
     Dim n As Double
+
+    If mTbGrow < 1 Then mTbGrow = 1
     For g = 1 To 3
         need(g) = 0
         For r = 1 To TB_ROWS
-            n = Len(BlockText(wsMeta, r, g)) * TB_CHAR_W + 2
+            n = Len(BlockText(wsMeta, r, g)) * TB_CHAR_W * CellPt(r, g) / 7 * mTbGrow + 2
+            If CellBold(r, g) Then n = n * 1.1
             If n > need(g) Then need(g) = n
         Next r
     Next g
@@ -3087,9 +3114,11 @@ Private Function BlockIsCurrent(ByVal ws As Worksheet, ByVal wsMeta As Worksheet
             If ws.Cells(r, c1).MergeArea.Address <> want.Address Then GoTo Nope
             If StrComp(Replace(CellFormula(ws.Cells(r, c1)), "'", ""), _
                        Replace(BlockFormula(wsMeta, r, g), "'", ""), vbTextCompare) <> 0 Then GoTo Nope
+            ' Sizes are SizeBlock's business; this is about the style.
             With ws.Cells(r, c1)
-                If .Font.Name <> TB_FONT Or .Font.Size <> TB_SIZE Then GoTo Nope
-                If .HorizontalAlignment <> xlCenter Then GoTo Nope
+                If .Font.Name <> TB_FONT Then GoTo Nope
+                If .Font.Bold <> CellBold(r, g) Then GoTo Nope
+                If .HorizontalAlignment <> GroupAlign(g) Then GoTo Nope
                 If .Interior.ColorIndex <> xlColorIndexNone Then GoTo Nope
             End With
         Next g
@@ -3137,19 +3166,202 @@ Private Sub WriteBlock(ByVal ws As Worksheet, ByVal wsMeta As Worksheet, ByVal e
 
             With rng
                 .Font.Name = TB_FONT
-                .Font.Size = TB_SIZE
-                .Font.Bold = False
-                .HorizontalAlignment = xlCenter
+                .Font.Size = CellPt(r, g)
+                .Font.Bold = CellBold(r, g)
+                .HorizontalAlignment = GroupAlign(g)
+                If g <> 2 Then .IndentLevel = 1
                 .VerticalAlignment = xlCenter
                 .WrapText = False
+                ' If the width estimate is ever short, the text gets a little
+                ' smaller instead of being cut off at the edge of its group.
+                .ShrinkToFit = True
             End With
-            BoxBorder rng
         Next g
     Next r
 
-    ws.Rows(1).RowHeight = TB_TITLE_H
-    ws.Range(ws.Rows(2), ws.Rows(TB_ROWS)).RowHeight = TB_ROW_H
+    ' One box round the lot and a rule under the title row. Sizes and row
+    ' heights are set by SizeBlock, which always runs next.
+    Set rng = ws.Range(ws.Cells(1, 1), ws.Cells(TB_ROWS, lastCol))
+    BoxBorder rng
+    With rng.Rows(1).Borders(xlEdgeBottom)
+        .LineStyle = xlContinuous
+        .Weight = xlThin
+        .ColorIndex = xlColorIndexAutomatic
+    End With
 End Sub
+
+
+' On-paper size, bold and alignment of each block cell. The title is the one
+' thing to find at a glance, then the revision.
+Private Function CellPt(ByVal r As Long, ByVal g As Long) As Double
+    If r = 1 And g = 1 Then CellPt = TB_TITLE_PT Else CellPt = TB_BODY_PT
+End Function
+
+
+Private Function CellBold(ByVal r As Long, ByVal g As Long) As Boolean
+    CellBold = (r = 1 And g = 1) Or (r = 2 And g = 3)
+End Function
+
+
+Private Function GroupAlign(ByVal g As Long) As Long
+    Select Case g
+        Case 1: GroupAlign = xlLeft
+        Case 2: GroupAlign = xlCenter
+        Case Else: GroupAlign = xlRight
+    End Select
+End Function
+
+
+' How far Excel will shrink this sheet to print it: 0.4 means 40%.
+'
+' Excel does not say. With a fixed zoom it is that zoom. With "fit to N pages
+' wide / tall" it is worked out here the way Excel does it: the printable
+' width of the paper against the width of the columns, and the same for
+' height when a number of pages tall is set. It is an estimate within a few
+' percent, which is a fraction of a point on the printed text.
+Public Function PrintScale(ByVal ws As Worksheet, ByVal lastCol As Long) As Double
+    Dim ps As PageSetup
+    Dim z As Variant, wide As Variant, tall As Variant
+    Dim pw As Double, ph As Double, t As Double
+    Dim contentW As Double, contentH As Double
+    Dim sc As Double, ur As Range
+
+    On Error GoTo Fallback
+    Set ps = ws.PageSetup
+    sc = 1
+
+    z = ps.Zoom
+    If VarType(z) <> vbBoolean Then
+        If CDbl(z) > 0 Then sc = CDbl(z) / 100
+    Else
+        PaperPoints ps.PaperSize, pw, ph
+        If ps.Orientation = xlLandscape Then t = pw: pw = ph: ph = t
+        pw = pw - ps.LeftMargin - ps.RightMargin
+        ph = ph - ps.TopMargin - ps.BottomMargin
+
+        contentW = ws.Range(ws.Cells(1, 1), ws.Cells(1, lastCol)).Width
+        wide = ps.FitToPagesWide
+        If VarType(wide) <> vbBoolean And contentW > 0 Then
+            If CDbl(wide) > 0 Then
+                If pw * CDbl(wide) / contentW < sc Then sc = pw * CDbl(wide) / contentW
+            End If
+        End If
+
+        Set ur = ws.UsedRange
+        contentH = ws.Range(ws.Rows(1), ws.Rows(ur.Row + ur.Rows.Count - 1)).Height
+        tall = ps.FitToPagesTall
+        If VarType(tall) <> vbBoolean And contentH > 0 Then
+            If CDbl(tall) > 0 Then
+                If ph * CDbl(tall) / contentH < sc Then sc = ph * CDbl(tall) / contentH
+            End If
+        End If
+    End If
+
+    If sc < 0.1 Then sc = 0.1           ' Excel will not go below 10%
+    PrintScale = sc
+    Exit Function
+
+Fallback:
+    PrintScale = 1
+End Function
+
+
+' Paper size in points, portrait. A4 for anything not listed.
+Private Sub PaperPoints(ByVal paper As Long, ByRef w As Double, ByRef h As Double)
+    Select Case paper
+        Case xlPaperA3: w = 841.9: h = 1190.6
+        Case xlPaperA5: w = 419.5: h = 595.3
+        Case xlPaperLetter: w = 612: h = 792
+        Case xlPaperLegal: w = 612: h = 1008
+        Case Else: w = 595.3: h = 841.9
+    End Select
+End Sub
+
+
+' Sets the block and notes font sizes, and the row heights to match, so they
+' print at TB_TITLE_PT / TB_BODY_PT / TB_NOTES_PT whatever the sheet's
+' scaling. Only writes what is off by more than a hair, and says what it did.
+'
+' The notes box keeps its shape: its rows grow by the same factor as its
+' font, so text that fitted before still fits. Its text is not rewritten, so
+' bold words in it stay bold.
+Private Function SizeBlock(ByVal ws As Worksheet, ByVal lastCol As Long, _
+                           ByVal notesTop As Long, ByVal notesBot As Long, _
+                           ByRef changed As Long) As String
+    Dim sc As Double, grow As Double
+    Dim r As Long, c As Long
+    Dim cell As Range
+    Dim want As Double, cur As Double, f As Double
+    Dim n As Long
+
+    sc = PrintScale(ws, lastCol)
+    grow = 1 / sc
+    If grow < 1 Then grow = 1
+
+    For r = 1 To TB_ROWS
+        For c = 1 To lastCol
+            Set cell = ws.Cells(r, c)
+            If cell.Address = cell.MergeArea.Cells(1, 1).Address Then
+                If r = 1 And c = 1 Then want = TB_TITLE_PT Else want = TB_BODY_PT
+                want = SheetPt(want, grow)
+                If Abs(NzSize(cell) - want) > 0.2 Then
+                    cell.MergeArea.Font.Size = want
+                    n = n + 1
+                End If
+            End If
+        Next c
+        If r = 1 Then want = SheetPt(TB_TITLE_PT, grow) * 1.7 Else want = SheetPt(TB_BODY_PT, grow) * 1.4
+        If want > 409 Then want = 409
+        If Abs(ws.Rows(r).RowHeight - want) > 0.3 Then
+            ws.Rows(r).RowHeight = want
+            n = n + 1
+        End If
+    Next r
+
+    If notesTop > 0 Then
+        want = SheetPt(TB_NOTES_PT, grow)
+        cur = NzSize(ws.Cells(notesTop, 1))
+        If cur <= 0 Then cur = TB_NOTES_PT
+        If Abs(cur - want) > 0.2 Then
+            f = want / cur
+            ws.Cells(notesTop, 1).Font.Size = want
+            For r = notesTop To notesBot
+                If ws.Rows(r).RowHeight * f > 409 Then
+                    ws.Rows(r).RowHeight = 409
+                Else
+                    ws.Rows(r).RowHeight = ws.Rows(r).RowHeight * f
+                End If
+            Next r
+            n = n + 1
+        End If
+    End If
+
+    If n > 0 Then
+        changed = changed + 1
+        SizeBlock = "Sized to print at the same size as every other schedule (this sheet " & _
+                    "prints at about " & Format$(sc * 100, "0") & "%, so the title is " & _
+                    Format$(SheetPt(TB_TITLE_PT, grow), "0.#") & "pt in the sheet). "
+    End If
+End Function
+
+
+Private Function SheetPt(ByVal paperPt As Double, ByVal grow As Double) As Double
+    SheetPt = Round(paperPt * grow * 2, 0) / 2       ' nearest half point
+    If SheetPt > TB_MAX_PT Then SheetPt = TB_MAX_PT
+End Function
+
+
+' A cell's font size, or that of its first character when the text mixes
+' sizes (Font.Size is then Null). 0 when there is no telling.
+Private Function NzSize(ByVal cell As Range) As Double
+    Dim v As Variant
+    On Error Resume Next
+    v = cell.Font.Size
+    If IsNull(v) Then v = cell.Characters(1, 1).Font.Size
+    If Not IsNumeric(v) Then v = 0
+    NzSize = CDbl(v)
+    On Error GoTo 0
+End Function
 
 
 ' The notes box merged across the full width. Its text is not rewritten, so
