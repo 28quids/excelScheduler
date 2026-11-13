@@ -546,14 +546,27 @@ What it does to each schedule sheet:
 
 - **Width**: the block spans the schedule's own columns, the print area if one
   is set, otherwise the rightmost column with anything in it below the notes.
-- **Splits**: where the three groups divide is **kept** from the existing block
-  when it still spans exactly those columns and every group's text fits.
-  Otherwise the columns are divided in proportion to each group's longest line.
-  So a repair never reshapes a block that already looks right, and adding a
-  column re-fits it.
-- **Style**: Verdana 7, centred, thin box round each group, row 1 at 20.1pt
-  and rows 2-4 at 9.9pt, the project template. A block drawn in another style
-  is brought into line.
+- **Splits**: the three groups are equal thirds of the block's width, as near
+  as the column edges allow. A merge can only end on a column edge, so a
+  schedule with a very wide column can come out at something like 38/29/33.
+  It is worked out from the column widths alone, so the same schedule always
+  gets the same block, and adding a column re-fits it.
+- **Style**: the same fields in the same places as the project template, laid
+  out for reading on paper: the schedule title larger and bold, the revision
+  bold, the three groups aligned left / centre / right instead of each in its
+  own box, one box round the whole block with a rule under the title row.
+  Verdana throughout, and Shrink to fit on every block cell, so text that
+  would overrun its group gets slightly smaller instead of being cut off. A
+  block drawn in another style is brought into line.
+- **Size on paper**: Excel shrinks a wide schedule to fit the page, and a title
+  block in cells shrinks with it. That is how the widest schedules printed
+  theirs at about 3pt. So the tool works out how far Excel will shrink each
+  sheet (from the zoom, or from the paper, margins and column widths when it
+  is set to fit to a page) and enlarges the block and the notes to cancel it
+  out. Every schedule then prints its title at 11pt, the rest of the block at
+  7.5pt and the notes at 7pt, however many columns it has. On a wide schedule
+  that makes the block look large in Normal view; that is expected. The notes
+  box grows by the same factor as its text, so text that fitted still fits.
 - **Notes**: the General Notes box (a merged cell in column A just below the
   block, starting `General Notes` or `Notes`) is merged across the full width.
   Its text is never rewritten, so bold and line breaks in it survive.
@@ -580,8 +593,13 @@ failure on the Log, when:
 - there are fewer than six labels in rows 1-4, too few to be sure it is a block
 - the schedule is under three columns wide
 
-A schedule whose block and print titles are already exactly right is not
-saved, so its modified date does not move.
+A schedule whose block, sizes and print titles are already exactly right is
+not saved, so its modified date does not move.
+
+**Press it again after adding or removing columns, or changing the paper size,
+orientation or margins.** Those change how far Excel shrinks the sheet, and so
+the size the block needs to be. Hand edits to the revision table need nothing:
+every value in the block is a live formula.
 
 ## Schedules that print their own title block
 
@@ -846,8 +864,10 @@ is left alone.
 ## Known limits
 
 - The title block's split points are chosen from an estimate of how wide
-  Verdana 7 capitals are (`TB_CHAR_W` in `modSchedule.bas`). A warning on the
-  Log means check a print preview, not that anything was cut off for certain.
+  Verdana capitals are (`TB_CHAR_W` in `modSchedule.bas`), and its size from an
+  estimate of how far Excel will shrink the sheet. Both are within a few
+  percent; Shrink to fit covers the first. The on-paper sizes are the `TB_..._PT`
+  constants at the top of `modSchedule.bas`.
 - The ScheduleList columns changed in 1.2 (`RevDescription` and
   `Classification` were added). `InstallTool` empties the list, and the first
   refresh after it is a full one. Ticks on the old list are not carried over.
