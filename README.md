@@ -63,30 +63,109 @@ touches that sheet, so keep it in step by hand.
 ## Per project
 
 1. Copy the template MPI into the project folder alongside the schedules.
-2. Fill in **Client**, **Project Name**, **Project Number** on the Setup sheet.
-3. Press **Set up / repair schedules**.
+2. Fill in **Client**, **Project Name**, **Project Number** and **Security
+   classification** on the Setup sheet.
+3. Press **Refresh schedule list**, then **Set up / repair links** with nothing
+   ticked, and say Yes to all.
 
 That's it. Nothing else is typed twice.
 
-## The eight buttons
+## The ticks: which schedules a button works on
 
-**Set up / repair schedules** — opens every workbook in the folder, points its
+**Every button that changes a schedule works on the rows with an `x` in
+column A (`Select`) of ScheduleList, and only those.** The PDF export too.
+
+With nothing ticked, a button works on every workbook in the folder, but its
+confirmation box says **ALL** in capitals and defaults to **No** first. Ticked
+files are listed by name in the box, so what you are agreeing to is on screen.
+
+Most of what these buttons do cannot be undone except from the backup, so
+doing the one schedule that needs it, rather than all 26, is the safer habit,
+and the tool makes it the easy one.
+
+Ticks stay until you delete them. That is deliberate: **Add revision to
+ticked** then **Export ticked to PDF** issues exactly the schedules you just
+revised. Pressing Add revision twice does no harm, a revision already in a
+table is refused.
+
+A ticked row whose file has gone from the folder is left out and named in the
+confirmation box. The reference schedule is never a target of the buttons
+that copy from it, even when ticked.
+
+## The buttons
+
+Three groups on the Setup sheet, left to right by how often you need them.
+
+| Every issue | Adding a schedule | One job at a time |
+|---|---|---|
+| Refresh schedule list | Set up new schedule(s) | Set up / repair links |
+| Add revision to ticked | | Set classification |
+| Export ticked to PDF | | Copy headers & footers |
+| | | Copy cover & revision page |
+| | | Title block |
+| | | Tidy sheets |
+| | | Rename files |
+
+## Adding a new schedule
+
+1. Put the file in the project folder.
+2. Press **Refresh schedule list**. Every workbook in the folder is listed,
+   including one with no Revision Page yet, which shows as
+   `NOT A SCHEDULE YET`.
+3. Put an `x` next to it.
+4. Press **Set up new schedule(s)**.
+
+That one button opens each ticked file once and does, in order:
+
+1. Front Cover and Revision Page from the reference schedule (its own title
+   and any revision history are kept, as with **Copy cover & revision page**)
+2. links set up to this MPI
+3. the title block and General Notes box, fitted to its columns, and added
+   above the schedule if it has none (see [Title block](#title-block))
+4. headers and footers from the reference, logo included
+5. sheets put in order, Metadata hidden
+
+then saves it once. A file that fails any step is closed **without saving**,
+so a half-done schedule is never written. It only ever works on ticked rows:
+with nothing ticked it explains the steps above and stops.
+
+**Set up / repair links** — opens the ticked schedules, points their
 Metadata at this MPI, rebuilds the local references, clears leftover links from
-whatever it was copied from, and saves. It is idempotent, so **adding a new
-schedule to the folder needs nothing more than pressing this again**. Same for
-a link someone has broken, or a change to the suitability codes or the revision
-families. It backs up every file it touches into a timestamped `_backup` folder
-first (turn that off on the Setup sheet if you don't want it).
+whatever they were copied from, and saves. It is idempotent: safe to run on a
+schedule that is already right. Use it for a link someone has broken, or after
+a change to the suitability codes, the project fields or the revision
+families. A workbook with no Revision Page is skipped and pointed at **Set up
+new schedule(s)**. It backs up every file it touches into a timestamped
+`_backup` folder first (turn that off on the Setup sheet if you don't want it).
 
-**Refresh schedule list** — reads every schedule and writes what it actually
-contains onto the ScheduleList sheet, then checks it. The `Checks` column says
-`OK` or what is wrong. It flags:
+**Refresh schedule list** — reads every workbook in the folder and writes what
+it actually contains onto the ScheduleList sheet, then checks it. Besides the
+title block values it shows:
 
-- no Metadata sheet (never been set up)
+- **RevDescription**, the Description on the revision table row of the latest
+  revision, read straight from `RevisionTable`
+- **Classification**, the security marking the file really carries (see
+  [Security classification](#security-classification))
+
+The `Checks` column says `OK` or what is wrong. It flags:
+
+- not a schedule yet (no Revision Page), or never set up (no Metadata sheet)
 - Project Name / Number / Client that don't match the MPI
 - a blank revision or schedule name
+- a latest revision with no description, or that is not in `RevisionTable`
 - links to any workbook other than the MPI
+- a sheet with no security marking while the others have one
+- **a classification that differs from the Setup sheet**, or from most of the
+  other schedules when the Setup sheet does not name one
 - **a revision or date that differs from most of the other schedules**
+
+Schedules that are not set up are left out of the "most of the others"
+comparisons, so one new file does not make every other row look wrong.
+
+Each file name is a link: click it to open that schedule and check something.
+Every button leaves a file you have open alone, and says so on the Log sheet,
+because closing it underneath you would lose whatever you had not saved. The
+refresh reads an open file as it stands and leaves it open.
 
 That last one is the "23 schedules say P04 and one still says P03" check.
 
@@ -98,7 +177,7 @@ Files are read without updating links and without recalculating, so the list
 shows what is actually saved in each file, i.e. exactly what a recipient sees
 when they open it offline.
 
-**Add revision to ticked** — put an `x` in the `Add?` column and fill in the
+**Add revision to ticked** — put an `x` in column A and fill in the
 `New Rev` / `New Status` / `New Date` / ... columns on that row. Anything left
 blank falls back to the *New revision* block on the Setup sheet.
 
@@ -109,8 +188,8 @@ So both jobs are the same operation:
   those six, leave the rest alone.
 
 It appends one row per revision table, refuses a revision number that is
-already in that file, and clears the tick and the typed values on the rows that
-succeeded so the list is ready for the next round.
+already in that file, and clears the typed values on the rows that succeeded.
+The tick stays, so **Export ticked to PDF** straight after issues the same set.
 
 The new line goes in **directly under the last revision**, not at the bottom of
 the table. Revision tables are usually drawn with spare rows below the last
@@ -118,11 +197,11 @@ entry, and appending past them leaves a gap that makes the title block look
 like it skipped a revision. The table only grows by a row when every row in it
 is already used.
 
-The `Add?` and `New Rev` headers carry hover notes explaining this on the
+The `Select` and `New Rev` headers carry hover notes explaining this on the
 sheet, and the same is written under the buttons on the Setup sheet.
 
-**Export to PDF** — writes a PDF of each schedule. The only button that never
-writes to a schedule at all. Full detail below.
+**Export ticked to PDF** — writes a PDF of each ticked schedule. The only button
+that never writes to a schedule at all. Full detail below.
 
 ## Setup sheet
 
@@ -137,13 +216,18 @@ Every time an option has been added, the rows below it have shifted and the old
 values ended up under new meanings. Reading by label means an older sheet still
 reads correctly and `InstallTool` simply tidies the layout.
 
-`InstallTool` rebuilds this sheet each time it runs. It clears columns A, C and
-H and rewrites them, because option rows move between versions and a label left
-on an old row is worse than no label at all. It does **not** touch column B
-(your values), column F (the suitability codes), or any other sheet in the
-workbook, so a README sheet of your own is safe. Option cells holding a value
-from an older layout, such as a date serial sitting where a Yes/No now lives,
-are reset to the default rather than left to be read wrong.
+`InstallTool` rebuilds this sheet each time it runs. It clears the labels in
+column A, columns C and H to K, and rewrites them, because option rows move
+between versions and a label left on an old row is worse than no label at all.
+Option values are lifted out **by their label** first and put back on whatever
+row that label now sits, so adding an option never leaves an old value under a
+new name.
+
+It does **not** touch the project values in `B1:B4`, the New revision values,
+the **PROJECT FIELDS** block (names or values: schedules link to those cells by
+address), column F (the suitability codes), or any other sheet in the workbook,
+so a README sheet of your own is safe. Versions before 1.2 cleared the project
+field **names** on every install; if yours went missing, type them back in.
 
 | Cell | Meaning |
 |---|---|
@@ -154,15 +238,61 @@ are reset to the default rather than left to be read wrong.
 | `B11` Reference schedule | the schedule that is set up correctly. Used by both copy buttons. Blank = the button asks, then fills this in |
 | `B12` Header image | logo for the top-right of the header. Blank = the button asks; decline and headers stay text only |
 | `B13` Header image scale % | that logo's size as a percentage of the image's own size. Default `20` |
-| `B14`, `B15` | when setup and the refresh last ran. Written by the tool, read only |
+| `B14` Security classification | what every schedule should be marked: `None`, `OFFICIAL`, `OFFICIAL-SENSITIVE`, `CONFIDENTIAL`, `COMMERCIAL IN CONFIDENCE`. ScheduleList flags any file that is not. Blank = compare with most of the others instead |
+| `B15`, `B16` | when setup and the refresh last ran. Written by the tool, read only |
 | `F1:F...` Suitability Codes | the dropdown pushed into every schedule's Metadata sheet and revision table. Seeded with the ISO 19650 codes below; edit here and re-run setup to push the change to all files |
 
-## Headers and footers (security classification)
+## Security classification
 
-**Copy headers & footers** takes one workbook's headers and footers and puts
-them on all the others. This is how `OFFICIAL`, `OFFICIAL-SENSITIVE`,
-`CONFIDENTIAL` (or nothing at all) gets applied consistently: set one schedule
-up by hand under Page Layout, then push it to the rest.
+The marking normally sits in the headers and footers, sometimes in a cell of
+its own on the cover. The refresh reads it from every printed sheet of every
+schedule and shows it in the **Classification** column:
+
+- `OFFICIAL`, `CONFIDENTIAL` and so on, when every marking agrees
+- `None` when there is no marking anywhere
+- `CONFIDENTIAL + OFFICIAL` when sheets disagree, which is how a stray
+  footer shows up
+
+`Checks` also names any printed sheet that has no marking while the others do,
+and any file that does not match **Security classification** on the Setup
+sheet. Leave that blank and each file is compared with the majority instead.
+
+What counts as a marking: `OFFICIAL`, `OFFICIAL-SENSITIVE` (or with a space),
+`CONFIDENTIAL`, `COMMERCIAL IN CONFIDENCE`, `RESTRICTED`, `SECRET`,
+`TOP SECRET`, in any case. In headers and footers it is found anywhere in the
+text, formatting codes and all. In cells it only counts when it is all the cell
+says, and only on the Front Cover, the Revision Page and the title block rows
+of a schedule sheet, so a word in the body of a schedule is never mistaken for
+one. The `Delref Classification` row is never read or changed.
+
+### Set classification
+
+Choose the marking in **Security classification** on the Setup sheet, tick the
+schedules, press **Set classification**. For each one:
+
+- every marking already in a header or footer is changed **where it stands**,
+  keeping its font, size and colour
+- every cell on the cover or revision page that says nothing but a marking is
+  changed (or emptied, for `None`)
+- a printed sheet with no marking at all gets one, bold, in the centre of its
+  footer, and of its header if that is empty
+- `None` takes markings out, and a header or footer section left with nothing
+  but formatting codes is emptied
+
+Nothing else in a header or footer is touched: not the logo, page numbers,
+orientation or margins. Each file is then read back, and anything other than
+the chosen marking on every printed sheet is a **failure**: the file is closed
+without saving and the Log says what it found. A marking shown through a
+formula is never overwritten, and is named.
+
+A file that is already right is not saved, so its modified date does not move.
+
+## Headers and footers
+
+**Copy headers & footers** takes the reference schedule's headers and footers
+and puts them on the ticked ones. Use it for the whole header and footer
+design: the logo, page numbers, a document reference. For only the marking,
+**Set classification** is the direct way.
 
 Sheets are matched in this order:
 
@@ -214,7 +344,7 @@ same `B11` reference is used by **Copy cover & revision page**.
 
 ## Tidying the sheets
 
-**Tidy sheets** puts every workbook in the folder the same way round:
+**Tidy sheets** puts the ticked workbooks the same way round:
 
 ```
 Front Cover | Revision Page | Schedule | (Metadata, hidden)
@@ -233,7 +363,8 @@ workbook that is already tidy is closed without saving and logged as unchanged.
 
 ## Renaming files
 
-**Rename files** does a find and replace across schedule file names. The
+**Rename files** does a find and replace across schedule file names, on the
+ticked rows when any are ticked, otherwise on every row. The
 obvious use is swapping the `PROJECTNUMBER` placeholder in
 `Z9A...-PROJECTNUMBER-SC-M-...xlsx` for the real number across all 24 at once.
 
@@ -346,10 +477,10 @@ closed by the time the repair runs on the copy.
 Only `Metadata!B4:B6` and the project fields still reach outside, to the MPI,
 exactly as everywhere else.
 
-It asks which schedules to hit. If any rows are ticked in `Add?` on
-ScheduleList you get the choice of just those or all of them; otherwise it is
-all of them. The reference itself is always skipped. A file that fails is
-closed **without saving**, so a half-copied schedule never gets written.
+It works on the ticked rows, like every other button. The reference itself is
+always skipped. A file that fails is closed **without saving**, so a
+half-copied schedule never gets written. Its confirmation box defaults to No
+even when rows are ticked.
 
 This is the most destructive thing the tool does. Leave `Backup before changes`
 on, and the confirmation box says so in as many words when it is off.
@@ -390,6 +521,67 @@ what the dropdown offers from here on.
 
 `A1`/`A2` and `B1`/`B2` share a description on purpose. The number is the
 issue count, not a different status. Add `A3`, `B3` and so on as needed.
+
+## Title block
+
+**Title block** draws the block at the top of each ticked schedule sheet so
+nobody merges cells by hand:
+
+```
+| SCHEDULE OF ...  | DOCUMENTS REFERENCE: ...  |                     |
+| CLIENT: ...      | PURPOSE OF DOCUMENT: ...  | REVISION: ...       |
+| PROJECT: ...     | PROJECT NUMBER: ...       | REVISION DATE: ...  |
+| PREPARED BY: ... | CHECKED BY: ...           | APPROVED BY: ...    |
+
+| General Notes: ... merged across the full width                   |
+```
+
+It stays in cells rather than the page header on purpose. A native header is
+capped at 255 characters (this block is already about 240), cannot hold a
+formula so it would go stale the moment anyone edited a revision by hand,
+shows only in print preview, and cannot have borders. In cells every value
+is a live formula on the local Metadata sheet, and it shows in a screenshot.
+
+What it does to each schedule sheet:
+
+- **Width**: the block spans the schedule's own columns, the print area if one
+  is set, otherwise the rightmost column with anything in it below the notes.
+- **Splits**: where the three groups divide is **kept** from the existing block
+  when it still spans exactly those columns and every group's text fits.
+  Otherwise the columns are divided in proportion to each group's longest line.
+  So a repair never reshapes a block that already looks right, and adding a
+  column re-fits it.
+- **Style**: Verdana 7, centred, thin box round each group, row 1 at 20.1pt
+  and rows 2-4 at 9.9pt, the project template. A block drawn in another style
+  is brought into line.
+- **Notes**: the General Notes box (a merged cell in column A just below the
+  block, starting `General Notes` or `Notes`) is merged across the full width.
+  Its text is never rewritten, so bold and line breaks in it survive.
+- **Every page**: print titles become rows 1 to the end of the notes box, or
+  further if they already reached further (that is where the schedule's own
+  column headings are). Notes repeat on every page on purpose: whoever has page
+  3 of 5 needs them too.
+- **Page numbers**: `Page &P of &N` goes in the right footer when the sheet has
+  no page number anywhere and that section is empty.
+
+**A schedule with no title block gets one.** 12 rows are inserted above it:
+the block, a gap, an empty `General Notes:` box six rows tall, and a gap.
+Everything below moves down, formulas, print area and print titles included,
+as Excel does for any inserted row. Grow the notes box by inserting rows
+inside it. The Log reminds you to check that the print titles take in the
+schedule's own column headings, since the tool cannot tell which rows those
+are on a sheet it has never seen.
+
+**It stops rather than guesses.** A sheet is left alone, and named as a
+failure on the Log, when:
+
+- rows 1-4 hold text that is neither a title block label nor the schedule title
+- title block labels sit anywhere other than rows 1-4
+- there are fewer than six labels in rows 1-4, too few to be sure it is a block
+- the schedule is under three columns wide
+
+A schedule whose block and print titles are already exactly right is not
+saved, so its modified date does not move.
 
 ## Schedules that print their own title block
 
@@ -464,9 +656,9 @@ The repair then does two things with each one:
    the cell beside it at that Metadata row.
 
 So adding a field is: type `DfE Code` and its value on the Setup sheet, add a
-`DfE Code` label to the reference schedule's Revision Page, press **Set up /
-repair schedules**, then **Copy cover & revision page** to give every other
-schedule the same label. After that the value comes from the MPI everywhere.
+`DfE Code` label to the reference schedule's Revision Page, then with nothing
+ticked press **Set up / repair links** and **Copy cover & revision page** to
+give every other schedule the same label. After that the value comes from the MPI everywhere.
 
 The rows are rewritten in full on every repair, so deleting a field on the MPI
 deletes it from every schedule too.
@@ -534,7 +726,8 @@ family first and then by number:
 
 So `AF01` beats `C09` beats `P12`. The list lives in one place, the
 `REV_PREFIXES` constant at the top of `modSchedule.bas`. Add a family there and
-re-run **Set up / repair schedules** to push the new formulas into every file.
+re-run **Set up / repair links** (nothing ticked, Yes to all) to push the new
+formulas into every file.
 
 The repair rewrites these formulas **everywhere in the workbook**, not just the
 seven cells on the Revision Page, so a copy of the same formula sitting on a
@@ -580,7 +773,18 @@ URLs.
 
 ## Exporting to PDF
 
-**Export to PDF** asks four things and then gets on with it:
+**Export ticked to PDF** with rows ticked asks one thing:
+
+> Export the 6 ticked schedules to `<project folder>\_pdf`, one PDF per
+> workbook, replacing any PDF of the same name?
+>
+> Yes - export / No - change where they go, or split them by sheet / Cancel
+
+So re-issuing the same set is: tick, press, Yes. **No** opens the full set of
+choices below for that run.
+
+With **nothing ticked** it asks the old four questions, which also covers
+schedules outside the project folder:
 
 1. **Which schedules** — every workbook in a folder you pick, or the files you
    pick yourself (Ctrl or Shift to select several, from anywhere).
@@ -641,6 +845,12 @@ is left alone.
 
 ## Known limits
 
+- The title block's split points are chosen from an estimate of how wide
+  Verdana 7 capitals are (`TB_CHAR_W` in `modSchedule.bas`). A warning on the
+  Log means check a print preview, not that anything was cut off for certain.
+- The ScheduleList columns changed in 1.2 (`RevDescription` and
+  `Classification` were added). `InstallTool` empties the list, and the first
+  refresh after it is a full one. Ticks on the old list are not carried over.
 - `DocumentNumber` comes from `CELL("filename")`, so it is blank until the file
   has been saved once.
 - The title cell is located within the first 60 rows / 10 columns of a sheet.
