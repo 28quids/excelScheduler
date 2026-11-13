@@ -2654,11 +2654,8 @@ End Function
 ' Every value is a live formula on the local Metadata sheet, as before.
 '
 ' The block spans the schedule's own columns: the print area if one is set,
-' otherwise the rightmost column with anything in it below the block. Where
-' the three groups split is kept from the existing block when the columns
-' still fit it, so a schedule does not change shape every time it is
-' repaired. Otherwise the splits are worked out from the column widths and
-' how long each group's text is.
+' otherwise the rightmost column with anything in it below the block, and is
+' split into three groups as near to equal thirds as the column edges allow.
 '
 ' A schedule with no block gets one: 12 rows are inserted above it, for the
 ' block, a gap, an empty General Notes box and a gap. Formulas, the print
@@ -2765,9 +2762,7 @@ Private Function BuildTitleBlock(ByVal ws As Worksheet, ByVal wsMeta As Workshee
     mTbGrow = 1 / PrintScale(ws, lastCol)
     If mTbGrow < 1 Then mTbGrow = 1
 
-    If Not ExistingSplits(ws, wsMeta, lastCol, end1, end2) Then
-        PlanSplits ws, wsMeta, lastCol, end1, end2
-    End If
+    PlanSplits ws, lastCol, end1, end2
     warn = FitWarning(ws, wsMeta, lastCol, end1, end2)
 
     ' --- write it, unless it is already exactly this -----------------------
@@ -2986,61 +2981,38 @@ Private Function OldBlockEdge(ByVal ws As Worksheet, ByVal notesTop As Long, _
 End Function
 
 
-' The splits the block already has, taken from row 2. Kept when the block
-' still spans exactly the schedule's columns and its text fits, so a repair
-' does not reshape a block somebody has already got looking right.
-Private Function ExistingSplits(ByVal ws As Worksheet, ByVal wsMeta As Worksheet, _
-                                ByVal lastCol As Long, ByRef end1 As Long, _
-                                ByRef end2 As Long) As Boolean
-    Dim a As Range, b As Range, c As Range
-
-    On Error GoTo Nope
-    Set a = ws.Cells(2, 1).MergeArea
-    end1 = a.Column + a.Columns.Count - 1
-    If end1 >= lastCol - 1 Then GoTo Nope
-    Set b = ws.Cells(2, end1 + 1).MergeArea
-    end2 = b.Column + b.Columns.Count - 1
-    If end2 >= lastCol Then GoTo Nope
-    Set c = ws.Cells(2, end2 + 1).MergeArea
-    If c.Column + c.Columns.Count - 1 <> lastCol Then GoTo Nope
-
-    ExistingSplits = (Len(FitWarning(ws, wsMeta, lastCol, end1, end2)) = 0)
-    Exit Function
-
-Nope:
-    end1 = 0: end2 = 0
-End Function
-
-
-' New splits: the columns divided so each group gets a share of the width in
-' proportion to its longest line of text, and never fewer than one column.
-Private Sub PlanSplits(ByVal ws As Worksheet, ByVal wsMeta As Worksheet, _
-                       ByVal lastCol As Long, ByRef end1 As Long, ByRef end2 As Long)
-    Dim need(1 To 3) As Double
+' The three groups as near to equal thirds of the block's width as the column
+' edges allow: every pair of split columns is tried and the one whose three
+' widths are closest to a third each wins. A merge can only end on a column
+' edge, so a schedule with one very wide column may come out at 38/29/33
+' rather than exact thirds. Worked out from the column widths alone, so the
+' same schedule always gets the same block.
+Private Sub PlanSplits(ByVal ws As Worksheet, ByVal lastCol As Long, _
+                       ByRef end1 As Long, ByRef end2 As Long)
     Dim cum() As Double
-    Dim total As Double, t1 As Double, t2 As Double, best As Double
-    Dim c As Long
+    Dim third As Double, d As Double, best As Double
+    Dim a As Long, b As Long, c As Long
 
-    GroupNeeds wsMeta, need
     ReDim cum(0 To lastCol)
     For c = 1 To lastCol
         cum(c) = cum(c - 1) + ColWidth(ws, c)
     Next c
-    total = need(1) + need(2) + need(3)
-    t1 = cum(lastCol) * need(1) / total
-    t2 = cum(lastCol) * (need(1) + need(2)) / total
+    third = cum(lastCol) / 3
 
-    end1 = 1
-    best = Abs(cum(1) - t1)
-    For c = 2 To lastCol - 2
-        If Abs(cum(c) - t1) < best Then best = Abs(cum(c) - t1): end1 = c
-    Next c
-
-    end2 = end1 + 1
-    best = Abs(cum(end2) - t2)
-    For c = end1 + 2 To lastCol - 1
-        If Abs(cum(c) - t2) < best Then best = Abs(cum(c) - t2): end2 = c
-    Next c
+    end1 = 1: end2 = 2
+    best = -1
+    For a = 1 To lastCol - 2
+        For b = a + 1 To lastCol - 1
+            d = (cum(a) - third) ^ 2 + _
+                (cum(b) - cum(a) - third) ^ 2 + _
+                (cum(lastCol) - cum(b) - third) ^ 2
+            If best < 0 Or d < best Then
+                best = d
+                end1 = a
+                end2 = b
+            End If
+        Next b
+    Next a
 End Sub
 
 

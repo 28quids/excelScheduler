@@ -546,11 +546,11 @@ What it does to each schedule sheet:
 
 - **Width**: the block spans the schedule's own columns, the print area if one
   is set, otherwise the rightmost column with anything in it below the notes.
-- **Splits**: where the three groups divide is **kept** from the existing block
-  when it still spans exactly those columns and every group's text fits.
-  Otherwise the columns are divided in proportion to each group's longest line.
-  So a repair never reshapes a block that already looks right, and adding a
-  column re-fits it.
+- **Splits**: the three groups are equal thirds of the block's width, as near
+  as the column edges allow. A merge can only end on a column edge, so a
+  schedule with a very wide column can come out at something like 38/29/33.
+  It is worked out from the column widths alone, so the same schedule always
+  gets the same block, and adding a column re-fits it.
 - **Style**: the same fields in the same places as the project template, laid
   out for reading on paper: the schedule title larger and bold, the revision
   bold, the three groups aligned left / centre / right instead of each in its
