@@ -26,6 +26,12 @@ Private Const MAX_PDF_PATH As Long = 255
 Private Const KEEP_LABELS As String = _
     "Document type,Delref Classification,BSUID,Trigger Events"
 
+' Security markings looked for in headers, footers and cells, as a regular
+' expression. Most specific first, so OFFICIAL-SENSITIVE is never read as
+' OFFICIAL and TOP SECRET never as SECRET.
+Private Const MARKINGS As String = _
+    "OFFICIAL[- ]SENSITIVE|COMMERCIAL IN CONFIDENCE|TOP SECRET|SECRET|CONFIDENTIAL|RESTRICTED|OFFICIAL"
+
 
 ' A schedule's revision history, lifted out before its sheet is replaced.
 Private Type RevData
@@ -2138,4 +2144,443 @@ Private Function PdfErrorText(ByVal errNo As Long, ByVal errText As String) As S
         Case Else
             PdfErrorText = "error " & errNo & " - " & errText & "."
     End Select
+End Function
+
+
+' ===========================================================================
+' Revision description
+' ===========================================================================
+
+' The Description on the revision table row for `rev`, which the refresh
+' passes as the latest revision. Read straight from RevisionTable, so it
+' needs no Metadata row and works on every schedule as it stands. The last
+' matching row wins, in case a revision was ever entered twice. `found` says
+' whether the row was there at all, so a blank description can be told apart
+' from a revision the table does not hold.
+Public Function RevisionDescription(ByVal wb As Workbook, ByVal rev As String, _
+                                    Optional ByRef found As Boolean) As String
+    Dim wsRev As Worksheet
+    Dim lo As ListObject
+    Dim body As Range
+    Dim cRev As Long, cDesc As Long, r As Long
+
+    found = False
+    If Len(rev) = 0 Then Exit Function
+
+    Set wsRev = GetSheet(wb, SH_REV)
+    If wsRev Is Nothing Then Exit Function
+
+    On Error Resume Next
+    Set lo = wsRev.ListObjects("RevisionTable")
+    On Error GoTo 0
+    If lo Is Nothing Then Exit Function
+
+    Set body = lo.DataBodyRange
+    If body Is Nothing Then Exit Function
+
+    cRev = ColumnIndexByName(lo, "Revision")
+    cDesc = ColumnIndexByName(lo, "Description")
+    If cRev = 0 Or cDesc = 0 Then Exit Function
+
+    For r = body.Rows.Count To 1 Step -1
+        If StrComp(AsText(CellValue(body.Cells(r, cRev))), rev, vbTextCompare) = 0 Then
+            found = True
+            RevisionDescription = AsText(CellValue(body.Cells(r, cDesc)))
+            Exit Function
+        End If
+    Next r
+End Function
+
+
+' ===========================================================================
+' Security classification
+'
+' The marking (OFFICIAL, OFFICIAL-SENSITIVE, CONFIDENTIAL ...) normally sits
+' in the headers and footers, and sometimes in a cell of its own on the
+' cover. ClassificationOf reads it for ScheduleList, which is how a stray
+' CONFIDENTIAL footer gets noticed; SetClassificationIn changes it in place.
+'
+' Header and footer sections are numbered 1 to 18 here: 1-6 the ordinary
+' left/centre/right header then footer, 7-12 the same for a different first
+' page, 13-18 for even pages. The last two sets only count when that option
+' is switched on for the sheet.
+' ===========================================================================
+
+' What a schedule is marked as: "None", one marking, or "A + B" when its
+' sheets disagree. `gaps` names any printed sheet that carries no marking
+' while others do, which is how a missing footer shows up.
+Public Function ClassificationOf(ByVal wb As Workbook, ByRef gaps As String) As String
+    Dim hfRe As Object, cellRe As Object
+    Dim all As Object, one As Object
+    Dim ws As Worksheet
+    Dim bare As String
+    Dim k As Variant
+
+    Set hfRe = MarkingRegex()
+    Set cellRe = WholeCellRegex()
+    Set all = CreateObject("Scripting.Dictionary")
+    gaps = ""
+
+    For Each ws In wb.Worksheets
+        If IsPrintedSheet(ws) Then
+            Set one = CreateObject("Scripting.Dictionary")
+            SheetMarkings ws, hfRe, cellRe, one
+            If one.Count = 0 Then
+                If Len(bare) > 0 Then bare = bare & ", "
+                bare = bare & ws.Name
+            Else
+                For Each k In one.Keys
+                    all(k) = True
+                Next k
+            End If
+        End If
+    Next ws
+
+    If all.Count = 0 Then
+        ClassificationOf = "None"
+        Exit Function
+    End If
+
+    If Len(bare) > 0 Then gaps = "No security marking on " & bare & ". "
+    ClassificationOf = SortedKeys(all, " + ")
+End Function
+
+
+' True for a value the Setup sheet may hold as a classification.
+Public Function IsKnownMarking(ByVal s As String) As Boolean
+    IsKnownMarking = WholeCellRegex().Test(s)
+End Function
+
+
+' "Official sensitive" -> "OFFICIAL-SENSITIVE": one spelling for comparing.
+Public Function NormaliseMarking(ByVal m As String) As String
+    m = UCase$(Trim$(m))
+    Do While InStr(m, "  ") > 0
+        m = Replace(m, "  ", " ")
+    Loop
+    If m = "OFFICIAL SENSITIVE" Then m = "OFFICIAL-SENSITIVE"
+    NormaliseMarking = m
+End Function
+
+
+' Changes the marking on every printed sheet to `wanted`, or takes it off
+' when `wanted` is "". Returns the log; `changed` counts what was written, so
+' the caller can leave a workbook that was already right unsaved.
+'
+' A marking that is already there, in a header, a footer or a cell of its
+' own, is replaced where it stands, keeping its font, size and colour. A sheet
+' with none gets one in the centre of its footer, and of its header too when
+' that is empty. Nothing else in a header or footer is touched, and neither
+' are orientation, margins or the logo.
+'
+' Then the workbook is read back, the way the header and footer copy checks
+' itself, and anything other than `wanted` everywhere is a PROBLEM.
+Public Function SetClassificationIn(ByVal wb As Workbook, ByVal wanted As String, _
+                                    ByRef changed As Long) As String
+    Dim hfRe As Object, cellRe As Object
+    Dim ws As Worksheet
+    Dim ps As PageSetup
+    Dim had As Object
+    Dim cell As Range
+    Dim i As Long
+    Dim before As String, after As String
+    Dim log As String, added As String, cellsDone As String, formulas As String
+    Dim gaps As String, nowReads As String, expected As String
+    Dim where As String
+
+    Set hfRe = MarkingRegex()
+    Set cellRe = WholeCellRegex()
+    changed = 0
+    If Len(wanted) > 0 Then wanted = NormaliseMarking(wanted)
+    expected = IIf(Len(wanted) = 0, "None", wanted)
+
+    On Error GoTo Failed
+
+    For Each ws In wb.Worksheets
+        If IsPrintedSheet(ws) Then
+            where = ws.Name
+            Set had = CreateObject("Scripting.Dictionary")
+            SheetMarkings ws, hfRe, cellRe, had
+            Set ps = ws.PageSetup
+
+            For i = 1 To 18
+                If SectionInUse(ps, i) Then
+                    before = HFSection(ps, i)
+                    If hfRe.Test(before) Then
+                        after = ReplaceMarking(hfRe, before, wanted)
+                        If StrComp(after, before, vbBinaryCompare) <> 0 Then
+                            SetHFSection ps, i, after
+                            changed = changed + 1
+                        End If
+                    End If
+                End If
+            Next i
+
+            For Each cell In MarkingArea(ws).Cells
+                If VarType(cell.Value) = vbString And Not IsDelrefRow(cell) Then
+                    If cellRe.Test(CStr(cell.Value)) Then
+                        If cell.HasFormula Then
+                            formulas = formulas & ws.Name & "!" & cell.Address(False, False) & " "
+                        ElseIf StrComp(Trim$(CStr(cell.Value)), wanted, vbBinaryCompare) <> 0 Then
+                            If Len(wanted) = 0 Then
+                                cell.ClearContents
+                            Else
+                                cell.Value = wanted
+                            End If
+                            changed = changed + 1
+                            cellsDone = cellsDone & ws.Name & "!" & cell.Address(False, False) & " "
+                        End If
+                    End If
+                End If
+            Next cell
+
+            If had.Count = 0 And Len(wanted) > 0 Then
+                ps.CenterFooter = AddMarking(ps.CenterFooter, wanted)
+                If Len(ps.CenterHeader) = 0 Then ps.CenterHeader = AddMarking("", wanted)
+                changed = changed + 1
+                If Len(added) > 0 Then added = added & ", "
+                added = added & ws.Name
+            End If
+        End If
+    Next ws
+
+    where = "reading it back"
+    If changed > 0 Then log = "Set to " & expected & " in " & changed & " place(s). "
+    If Len(added) > 0 Then log = log & "Added to the centre footer of " & added & ". "
+    If Len(cellsDone) > 0 Then log = log & "Cells changed: " & Trim$(cellsDone) & ". "
+
+    nowReads = ClassificationOf(wb, gaps)
+    If StrComp(nowReads, expected, vbTextCompare) <> 0 Then
+        log = log & "PROBLEM: reads back as " & nowReads & ", not " & expected & ". "
+        If Len(formulas) > 0 Then _
+            log = log & "These cells show a marking through a formula and were left alone: " & _
+                  Trim$(formulas) & ". "
+    ElseIf Len(wanted) > 0 And Len(gaps) > 0 Then
+        log = log & "PROBLEM: " & gaps
+    End If
+
+    SetClassificationIn = log
+    Exit Function
+
+Failed:
+    SetClassificationIn = log & "PROBLEM: '" & where & "' error " & Err.Number & " - " & _
+                          Err.Description & ". "
+End Function
+
+
+' A visible sheet that would print. Metadata never does.
+Private Function IsPrintedSheet(ByVal ws As Worksheet) As Boolean
+    If ws.Visible <> xlSheetVisible Then Exit Function
+    If LCase$(Trim$(ws.Name)) = LCase$(SH_META) Then Exit Function
+    IsPrintedSheet = HasSomethingToPrint(ws)
+End Function
+
+
+' Adds every marking on one sheet to `found`, normalised.
+Private Sub SheetMarkings(ByVal ws As Worksheet, ByVal hfRe As Object, ByVal cellRe As Object, _
+                          ByVal found As Object)
+    Dim ps As PageSetup
+    Dim ms As Object, m As Object
+    Dim cell As Range
+    Dim i As Long
+
+    On Error Resume Next
+    Set ps = ws.PageSetup
+    For i = 1 To 18
+        Set ms = Nothing
+        If SectionInUse(ps, i) Then
+            Set ms = hfRe.Execute(HFSection(ps, i))
+            If Not ms Is Nothing Then
+                For Each m In ms
+                    found(NormaliseMarking(CStr(m.SubMatches(1)))) = True
+                Next m
+            End If
+        End If
+    Next i
+
+    For Each cell In MarkingArea(ws).Cells
+        If VarType(cell.Value) = vbString And Not IsDelrefRow(cell) Then
+            Set ms = cellRe.Execute(CStr(cell.Value))
+            If ms.Count > 0 Then found(NormaliseMarking(CStr(ms(0).SubMatches(0)))) = True
+        End If
+    Next cell
+    Err.Clear
+    On Error GoTo 0
+End Sub
+
+
+' Where a marking typed into a cell is looked for: all of the cover and the
+' revision page, but only the printed title block of a schedule sheet, so a
+' word in the body of a long schedule is never taken for one. A cell counts
+' only when the marking is all it says.
+Private Function MarkingArea(ByVal ws As Worksheet) As Range
+    If IsCommonSheet(ws) Then
+        Set MarkingArea = ws.UsedRange
+    Else
+        Set MarkingArea = ws.Range(ws.Cells(1, 1), ws.Cells(TITLE_BLOCK_ROWS, TITLE_BLOCK_COLS))
+    End If
+End Function
+
+
+' The Revision Page row labelled "Delref Classification" holds a per-document
+' value that is not a security marking, whatever it says, so it is never read
+' as one or changed.
+Private Function IsDelrefRow(ByVal cell As Range) As Boolean
+    IsDelrefRow = (InStr(1, AsText(CellValue(cell.Worksheet.Cells(cell.Row, 1))), _
+                         "Delref", vbTextCompare) > 0)
+End Function
+
+
+' A marking anywhere in header or footer text. Group 1 is whatever sits just
+' before it: the start, a format code such as &B or a &K colour, or any
+' character that is not a letter. The format codes are the point: Excel
+' writes a bold banner as "&BOFFICIAL", and B is a letter. Group 2 is the
+' marking itself.
+Private Function MarkingRegex() As Object
+    Dim re As Object
+    Set re = CreateObject("VBScript.RegExp")
+    re.Global = True
+    re.IgnoreCase = True
+    re.pattern = "(^|&K[0-9A-Fa-f+\-]{6}|&[A-Za-z]|[^A-Za-z])(" & MARKINGS & ")(?![A-Za-z])"
+    Set MarkingRegex = re
+End Function
+
+
+' A cell, or a Setup value, that says nothing but a marking.
+Private Function WholeCellRegex() As Object
+    Dim re As Object
+    Set re = CreateObject("VBScript.RegExp")
+    re.Global = False
+    re.IgnoreCase = True
+    re.pattern = "^\s*(" & MARKINGS & ")\s*$"
+    Set WholeCellRegex = re
+End Function
+
+
+Private Function ReplaceMarking(ByVal re As Object, ByVal txt As String, _
+                                ByVal wanted As String) As String
+    Dim out As String
+    out = re.Replace(txt, "$1" & wanted)
+    If Len(wanted) = 0 Then out = TidySection(out)
+    ReplaceMarking = out
+End Function
+
+
+' What is left of a section once a marking is taken out: blank when only
+' formatting codes and line breaks remain, so an empty banner does not keep
+' its font settings behind, otherwise the text without doubled-up breaks.
+Private Function TidySection(ByVal s As String) As String
+    Dim bare As String
+
+    Do While InStr(s, vbLf & vbLf) > 0
+        s = Replace(s, vbLf & vbLf, vbLf)
+    Loop
+    Do While Left$(s, 1) = vbLf
+        s = Mid$(s, 2)
+    Loop
+    Do While Right$(s, 1) = vbLf
+        s = Left$(s, Len(s) - 1)
+    Loop
+
+    bare = RegexReplace(s, "&""[^""]*""|&K[0-9A-Fa-f+\-]{6}|&\d+|&[BIUESXY]", "")
+    bare = Replace(Replace(bare, vbLf, ""), vbCr, "")
+    If Len(Trim$(bare)) = 0 Then s = ""
+
+    TidySection = s
+End Function
+
+
+' A bold marking, on a line of its own above whatever the section held.
+Private Function AddMarking(ByVal existing As String, ByVal wanted As String) As String
+    AddMarking = "&B" & wanted & "&B"
+    If Len(existing) > 0 Then AddMarking = AddMarking & vbLf & existing
+End Function
+
+
+Private Function SectionInUse(ByVal ps As PageSetup, ByVal i As Long) As Boolean
+    If i <= 6 Then
+        SectionInUse = True
+    ElseIf i <= 12 Then
+        SectionInUse = ps.DifferentFirstPageHeaderFooter
+    Else
+        SectionInUse = ps.OddAndEvenPagesHeaderFooter
+    End If
+End Function
+
+
+Private Function HFSection(ByVal ps As PageSetup, ByVal i As Long) As String
+    Select Case i
+        Case 1: HFSection = ps.LeftHeader
+        Case 2: HFSection = ps.CenterHeader
+        Case 3: HFSection = ps.RightHeader
+        Case 4: HFSection = ps.LeftFooter
+        Case 5: HFSection = ps.CenterFooter
+        Case 6: HFSection = ps.RightFooter
+        Case 7: HFSection = ps.FirstPage.LeftHeader.Text
+        Case 8: HFSection = ps.FirstPage.CenterHeader.Text
+        Case 9: HFSection = ps.FirstPage.RightHeader.Text
+        Case 10: HFSection = ps.FirstPage.LeftFooter.Text
+        Case 11: HFSection = ps.FirstPage.CenterFooter.Text
+        Case 12: HFSection = ps.FirstPage.RightFooter.Text
+        Case 13: HFSection = ps.EvenPage.LeftHeader.Text
+        Case 14: HFSection = ps.EvenPage.CenterHeader.Text
+        Case 15: HFSection = ps.EvenPage.RightHeader.Text
+        Case 16: HFSection = ps.EvenPage.LeftFooter.Text
+        Case 17: HFSection = ps.EvenPage.CenterFooter.Text
+        Case 18: HFSection = ps.EvenPage.RightFooter.Text
+    End Select
+End Function
+
+
+Private Sub SetHFSection(ByVal ps As PageSetup, ByVal i As Long, ByVal txt As String)
+    Select Case i
+        Case 1: ps.LeftHeader = txt
+        Case 2: ps.CenterHeader = txt
+        Case 3: ps.RightHeader = txt
+        Case 4: ps.LeftFooter = txt
+        Case 5: ps.CenterFooter = txt
+        Case 6: ps.RightFooter = txt
+        Case 7: ps.FirstPage.LeftHeader.Text = txt
+        Case 8: ps.FirstPage.CenterHeader.Text = txt
+        Case 9: ps.FirstPage.RightHeader.Text = txt
+        Case 10: ps.FirstPage.LeftFooter.Text = txt
+        Case 11: ps.FirstPage.CenterFooter.Text = txt
+        Case 12: ps.FirstPage.RightFooter.Text = txt
+        Case 13: ps.EvenPage.LeftHeader.Text = txt
+        Case 14: ps.EvenPage.CenterHeader.Text = txt
+        Case 15: ps.EvenPage.RightHeader.Text = txt
+        Case 16: ps.EvenPage.LeftFooter.Text = txt
+        Case 17: ps.EvenPage.CenterFooter.Text = txt
+        Case 18: ps.EvenPage.RightFooter.Text = txt
+    End Select
+End Sub
+
+
+' A dictionary's keys in alphabetical order, joined. Two schedules marked the
+' same two ways then read the same, whichever sheet came first.
+Private Function SortedKeys(ByVal d As Object, ByVal sep As String) As String
+    Dim ks() As String
+    Dim k As Variant
+    Dim i As Long, j As Long, n As Long
+    Dim t As String
+
+    If d.Count = 0 Then Exit Function
+    ReDim ks(1 To d.Count)
+    For Each k In d.Keys
+        n = n + 1
+        ks(n) = CStr(k)
+    Next k
+
+    For i = 1 To n - 1
+        For j = i + 1 To n
+            If StrComp(ks(j), ks(i), vbTextCompare) < 0 Then
+                t = ks(i): ks(i) = ks(j): ks(j) = t
+            End If
+        Next j
+    Next i
+
+    For i = 1 To n
+        If i > 1 Then SortedKeys = SortedKeys & sep
+        SortedKeys = SortedKeys & ks(i)
+    Next i
 End Function

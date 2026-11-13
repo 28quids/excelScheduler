@@ -5,9 +5,20 @@ Option Explicit
 ' modMain - the buttons.
 '
 '   InstallTool           run once, after importing the modules
-'   SetupProject          link/repair every schedule in the folder
-'   RefreshScheduleList   read every schedule back and QA it
+'   RefreshScheduleList   read every workbook in the folder back and QA it
 '   AddRevisionToTicked   append a revision line to the ticked schedules
+'   ExportToPdf           PDFs of the ticked schedules
+'   SetupNewSchedules     everything a schedule new to the folder needs
+'   SetupProject          link/repair schedules
+'   CopyHeadersFooters    headers and footers from the reference schedule
+'   CopyCommonSheets      cover and revision page from the reference schedule
+'   SetClassification     the security marking, from the Setup sheet
+'   TidySheets            sheet order, names and visibility
+'   RenameFiles           find and replace across file names
+'
+' The x in column A of ScheduleList is the selection for every button that
+' changes a schedule: ticked rows only, and with nothing ticked the button
+' says it is about to do ALL of them before it does.
 '
 ' Every run reports to the Log sheet and finishes with a summary box.
 ' ---------------------------------------------------------------------------
@@ -21,8 +32,9 @@ Private Const R_OPT_FULL    As Long = 10
 Private Const R_OPT_HFSRC   As Long = 11
 Private Const R_OPT_HFIMG   As Long = 12
 Private Const R_OPT_HFSCALE As Long = 13
-Private Const R_OPT_SETUP   As Long = 14   ' read only
-Private Const R_OPT_LIST    As Long = 15   ' read only
+Private Const R_OPT_CLASS   As Long = 14
+Private Const R_OPT_SETUP   As Long = 15   ' read only
+Private Const R_OPT_LIST    As Long = 16   ' read only
 Private Const R_REV_FIRST   As Long = 18   ' Revision..Description = 18..24
 Private Const R_FLD_FIRST   As Long = 27   ' extra project fields
 Private Const R_FLD_COUNT   As Long = 12
@@ -38,6 +50,7 @@ Private Const LBL_FULL    As String = "Full refresh every time"
 Private Const LBL_HFSRC   As String = "Reference schedule"
 Private Const LBL_HFIMG   As String = "Header image"
 Private Const LBL_HFSCALE As String = "Header image scale %"
+Private Const LBL_CLASS   As String = "Security classification"
 Private Const LBL_SETUP   As String = "Last setup run"
 Private Const LBL_LIST    As String = "Last list refresh"
 
@@ -48,16 +61,42 @@ Private Const CLR_NOTE      As Long = 8421504    ' RGB(128, 128, 128)
 Private Const CLR_SECTION   As Long = 6575172    ' RGB(68, 84, 100)
 Private Const CLR_LABEL     As Long = 4210752    ' RGB(64, 64, 64)
 
-' ScheduleList columns.
+' ScheduleList columns. Columns 3-15 are read from each schedule's Metadata
+' sheet in FillRow, in the order of LIST_HEADERS below.
 Private Const C_PICK      As Long = 1
 Private Const C_FILE      As Long = 2
 Private Const C_DATA_1    As Long = 3      ' ScheduleName
-Private Const C_CHECKS    As Long = 16
-Private Const C_NEW_FIRST As Long = 17     ' New Rev..New Description = 17..23
-Private Const C_NEWNAME   As Long = 24     ' proposed file name, for the rename
-Private Const C_STAMP     As Long = 25     ' hidden, file modified time
-Private Const C_FILECHK   As Long = 26     ' hidden, checks that come from the file itself
+Private Const C_PROJNAME  As Long = 4
+Private Const C_PROJNO    As Long = 5
+Private Const C_CLIENT    As Long = 6
+Private Const C_REV       As Long = 8
+Private Const C_DATE      As Long = 9
+Private Const C_REVDESC   As Long = 16     ' latest revision's Description, from RevisionTable
+Private Const C_CLASS     As Long = 17     ' security marking, from headers / footers / cover
+Private Const C_CHECKS    As Long = 18
+Private Const C_NEW_FIRST As Long = 19     ' New Rev..New Description = 19..25
+Private Const C_NEWNAME   As Long = 26     ' proposed file name, for the rename
+Private Const C_STAMP     As Long = 27     ' hidden, file modified time
+Private Const C_FILECHK   As Long = 28     ' hidden, checks that come from the file itself
 Private Const REV_FIELDS  As Long = 7      ' Rev, Status, Date, Pr, Ch, Ap, Descr
+
+' Every ScheduleList header, in column order. Also how a refresh recognises a
+' list written under an older layout, whose rows it must not reuse.
+Private Const LIST_HEADERS As String = _
+    "Select|FileName|ScheduleName|ProjectName|ProjectNo|Client|DocType|Revision|Date|" & _
+    "PrBy|ChBy|ApBy|DocumentNo|SuitabilitySt|SuitabilityDs|RevDescription|Classification|" & _
+    "Checks|New Rev|New Status|New Date|New PrBy|New ChBy|New ApBy|New Description|" & _
+    "New FileName|_Stamp|_FileChecks"
+
+' What the refresh writes in the hidden file-checks column for a workbook it
+' cannot compare: never set up, or not a schedule yet. Rows starting with
+' this are left out of the project-wide comparisons.
+Private Const NOT_READY   As String = "NOT "
+
+' The values offered for the Security classification option. Anything the
+' marking pattern in modSchedule knows is accepted if typed instead.
+Private Const CLASS_CHOICES As String = _
+    "None,OFFICIAL,OFFICIAL-SENSITIVE,CONFIDENTIAL,COMMERCIAL IN CONFIDENCE"
 
 ' Where the PDFs go by default, inside the folder the schedules came from.
 Private Const PDF_SUBFOLDER As String = "_pdf"
@@ -86,6 +125,7 @@ Public Sub InstallTool()
     ' list belongs to the old layout and is now under the wrong heading.
     ' Emptying it costs nothing: the next refresh rebuilds it from the files.
     BuildListHeaders wsList
+    wsList.Range(wsList.Cells(2, 1), wsList.Cells(wsList.Rows.Count, C_FILECHK)).Hyperlinks.Delete
     wsList.Range(wsList.Cells(2, 1), wsList.Cells(wsList.Rows.Count, C_FILECHK)).Clear
     SetColumnState wsList
     EnsureSheet SH_LOG
@@ -107,14 +147,17 @@ Public Sub InstallTool()
     On Error GoTo 0
 
     MsgBox "Ready. Schedule tool version " & TOOL_VERSION & "." & vbCrLf & vbCrLf & _
-           "1. Fill in Client, Project Name and Project Number on this sheet." & vbCrLf & _
+           "1. Fill in Client, Project Name and Project Number on this sheet, and the " & _
+           "Security classification." & vbCrLf & _
            "2. Save this file into the project folder with the schedules." & vbCrLf & _
-           "3. Press 'Set up / repair schedules'.", vbInformation, "Schedule tool"
+           "3. Press 'Refresh schedule list'." & vbCrLf & _
+           "4. Press 'Set up / repair links' with nothing ticked, and say Yes to all.", _
+           vbInformation, "Schedule tool"
 End Sub
 
 
 ' ===========================================================================
-' Button 1 - point every schedule in the folder at this MAINPROJECTINFO
+' Set up / repair links - point the ticked schedules at this MAINPROJECTINFO
 ' ===========================================================================
 Public Sub SetupProject()
     Dim folderPath As String
@@ -127,6 +170,7 @@ Public Sub SetupProject()
     Dim oneLog As String
     Dim done As Long, skipped As Long, failed As Long
     Dim files As Collection, i As Long
+    Dim isAll As Boolean, leftOut As String
     Dim started As Double
 
     Set wsSetup = GetSheet(ThisWorkbook, SH_SETUP)
@@ -146,28 +190,24 @@ Public Sub SetupProject()
     folderPath = SchedulesFolder()
     If Len(folderPath) = 0 Then Exit Sub
 
-    Set files = ScheduleFiles(folderPath)
+    Set files = TargetFiles(folderPath, "", isAll, leftOut)
     If files.Count = 0 Then
-        MsgBox "No other Excel files found in:" & vbCrLf & folderPath, vbInformation
+        MsgBox "Nothing to set up." & vbCrLf & vbCrLf & leftOut, vbInformation, "Set up / repair links"
         Exit Sub
     End If
 
-    If MsgBox(PathFormWarning(folderPath) & _
-              files.Count & " workbook(s) will be opened, relinked to this file and saved." & vbCrLf & vbCrLf & _
-              folderPath & vbCrLf & vbCrLf & "Continue?", _
-              vbQuestion + vbYesNo, "Set up / repair schedules") = vbNo Then Exit Sub
+    If Not Confirmed(PathFormWarning(folderPath) & _
+              "Set up / repair " & ScopeText(files, isAll, leftOut) & vbCrLf & _
+              "Each one is opened, linked to this file, its local links rebuilt, and " & _
+              "saved. Safe to run again on a schedule that is already right." & vbCrLf & vbCrLf & _
+              BackupLine(wsSetup) & vbCrLf & vbCrLf & "Continue?", _
+              "Set up / repair links", isAll) Then Exit Sub
 
     statuses = GatherStatuses(wsSetup)
-
-    If UCase$(Trim$(CStr(Opt(wsSetup, LBL_BACKUP, R_OPT_BACKUP).Value))) <> "NO" Then
-        backupDir = EndSep(folderPath) & "_backup " & Format$(Now, "yyyy-mm-dd hh-nn")
-        On Error Resume Next
-        MkDir backupDir
-        On Error GoTo 0
-    End If
+    backupDir = MakeBackupDir(wsSetup, folderPath)
 
     On Error GoTo Fail
-    LogStart "Set up / repair schedules"
+    LogStart "Set up / repair links"
     BeginQuiet xlCalculationAutomatic
     ProgressStart files.Count, "Setting up schedules"
     started = Timer
@@ -177,38 +217,37 @@ Public Sub SetupProject()
         fullPath = EndSep(folderPath) & fileName
         ProgressStep i - 1, fileName
 
-        If Len(backupDir) > 0 Then
-            On Error Resume Next
-            FileCopy fullPath, EndSep(backupDir) & fileName
-            On Error GoTo 0
-        End If
+        If Not OpenInExcel(fileName, skipped) Then
+            BackUp backupDir, folderPath, fileName
+            Set wbTgt = OpenQuiet(fullPath, False)
 
-        Set wbTgt = OpenQuiet(fullPath, False)
-
-        If wbTgt Is Nothing Then
-            failed = failed + 1
-            LogLine fileName, "FAILED", "Could not open the file."
-        ElseIf Not LooksLikeSchedule(wbTgt) Then
-            wbTgt.Close SaveChanges:=False
-            skipped = skipped + 1
-            LogLine fileName, "Skipped", "No Revision Page - not a schedule."
-        Else
-            oneLog = ""
-            On Error Resume Next
-            oneLog = RepairWorkbook(wbTgt, ThisWorkbook.FullName, SH_SETUP, _
-                                    projNameRef, projNoRef, clientRef, statuses, _
-                                    ProjectFields(wsSetup))
-            If Err.Number <> 0 Then
-                LogLine fileName, "FAILED", "Error " & Err.Number & " - " & Err.Description
-                Err.Clear
+            If wbTgt Is Nothing Then
                 failed = failed + 1
+                LogLine fileName, "FAILED", "Could not open the file."
+            ElseIf Not LooksLikeSchedule(wbTgt) Then
                 wbTgt.Close SaveChanges:=False
+                skipped = skipped + 1
+                LogLine fileName, "Skipped", "No Revision Page yet. Use 'Set up new " & _
+                        "schedule(s)', which gives it one from the reference schedule."
             Else
-                wbTgt.Close SaveChanges:=True
-                done = done + 1
-                LogLine fileName, "OK", oneLog
+                oneLog = ""
+                On Error Resume Next
+                oneLog = RepairWorkbook(wbTgt, ThisWorkbook.FullName, SH_SETUP, _
+                                        projNameRef, projNoRef, clientRef, statuses, _
+                                        ProjectFields(wsSetup))
+                If Err.Number <> 0 Then
+                    LogLine fileName, "FAILED", "Error " & Err.Number & " - " & Err.Description
+                    Err.Clear
+                    failed = failed + 1
+                    wbTgt.Close SaveChanges:=False
+                Else
+                    wbTgt.Close SaveChanges:=True
+                    done = done + 1
+                    LogLine fileName, "OK", oneLog
+                End If
+                On Error GoTo Fail
             End If
-            On Error GoTo 0
+            Set wbTgt = Nothing
         End If
     Next i
 
@@ -216,19 +255,22 @@ Public Sub SetupProject()
     Opt(wsSetup, LBL_SETUP, R_OPT_SETUP).Value = Format$(Now, "dd/mm/yyyy hh:nn")
     EndQuiet
 
-    ShowSummary "Set up / repair schedules", done, skipped, failed, _
+    ShowSummary "Set up / repair links", done, skipped, failed, _
                 Timer - started, IIf(Len(backupDir) > 0, "Backup: " & backupDir, "")
 
     RefreshScheduleList
     Exit Sub
 
 Fail:
-    Recover "Set up / repair schedules", wbTgt
+    Recover "Set up / repair links", wbTgt
 End Sub
 
 
 ' ===========================================================================
-' Button 2 - read every schedule back and check it
+' Refresh schedule list - read every workbook in the folder back and check it
+'
+' Every workbook is listed, including one that is not a schedule yet, so a
+' file just dropped into the folder shows up and can be ticked.
 ' ===========================================================================
 Public Sub RefreshScheduleList()
     Dim wsSetup As Worksheet, wsList As Worksheet
@@ -237,8 +279,9 @@ Public Sub RefreshScheduleList()
     Dim files As Collection, i As Long
     Dim r As Long
     Dim mpiName As String, mpiNo As String, mpiClient As String
+    Dim wantClass As String
     Dim keep As Object
-    Dim fullRefresh As Boolean
+    Dim fullRefresh As Boolean, wasOpen As Boolean
     Dim stamp As Double
     Dim reused As Long, readCount As Long, failed As Long
     Dim started As Double
@@ -253,6 +296,7 @@ Public Sub RefreshScheduleList()
     mpiName = Trim$(CStr(wsSetup.Range("B3").Value))
     mpiNo = Trim$(CStr(wsSetup.Range("B4").Value))
     mpiClient = Trim$(CStr(wsSetup.Range("B1").Value))
+    wantClass = ClassificationSetting(wsSetup)
     fullRefresh = (UCase$(Trim$(CStr(Opt(wsSetup, LBL_FULL, R_OPT_FULL).Value))) = "YES")
 
     Set files = ScheduleFiles(folderPath)
@@ -267,6 +311,7 @@ Public Sub RefreshScheduleList()
     started = Timer
 
     BuildListHeaders wsList
+    wsList.Range(wsList.Cells(2, 1), wsList.Cells(wsList.Rows.Count, C_FILECHK)).Hyperlinks.Delete
     wsList.Range(wsList.Cells(2, 1), wsList.Cells(wsList.Rows.Count, C_FILECHK)).Clear
 
     r = 2
@@ -278,32 +323,50 @@ Public Sub RefreshScheduleList()
 
         If Not fullRefresh And CanReuse(keep, fileName, stamp) Then
             RestoreRow wsList, r, keep(LCase$(fileName))
+            LinkFileCell wsList.Cells(r, C_FILE), fullPath
             LogLine fileName, "Unchanged", "Not reopened - same as the last refresh."
             reused = reused + 1
             r = r + 1
         Else
-            Set wbTgt = OpenQuiet(fullPath, True)
+            ' One you have open is read as it stands and left open. Closing
+            ' it would lose whatever you have not saved.
+            wasOpen = IsWorkbookOpen(fileName)
+            If wasOpen Then
+                Set wbTgt = Workbooks(fileName)
+            Else
+                Set wbTgt = OpenQuiet(fullPath, True)
+            End If
+
             If wbTgt Is Nothing Then
                 failed = failed + 1
                 LogLine fileName, "FAILED", "Could not open the file."
             Else
                 If LooksLikeSchedule(wbTgt) Then
                     FillRow wsList, r, fileName, wbTgt
-                    wsList.Cells(r, C_STAMP).Value = stamp
-                    LogLine fileName, "Read", AsText(wsList.Cells(r, C_FILECHK).Value)
-                    readCount = readCount + 1
-                    r = r + 1
+                    LogLine fileName, "Read", AsText(wsList.Cells(r, C_FILECHK).Value) & _
+                            IIf(wasOpen, " Read from the copy open in Excel, including " & _
+                                         "anything not saved yet.", "")
                 Else
-                    LogLine fileName, "Skipped", "No Revision Page - not a schedule."
+                    wsList.Cells(r, C_FILE).Value = fileName
+                    wsList.Cells(r, C_FILECHK).Value = NOT_READY & "A SCHEDULE YET - " & _
+                        "no Revision Page. Tick it and press 'Set up new schedule(s)'."
+                    LogLine fileName, "Read", "Not a schedule yet - listed so it can be ticked."
                 End If
-                wbTgt.Close SaveChanges:=False
+                ' An open file's date on disk says nothing about what is in
+                ' memory, so it is never reused next time.
+                If Not wasOpen Then wsList.Cells(r, C_STAMP).Value = stamp
+                LinkFileCell wsList.Cells(r, C_FILE), fullPath
+                readCount = readCount + 1
+                r = r + 1
+                If Not wasOpen Then wbTgt.Close SaveChanges:=False
             End If
+            Set wbTgt = Nothing
         End If
     Next i
 
     RestoreTypedEntries wsList, keep, r - 1
-    ComposeChecks wsList, r - 1, mpiName, mpiNo, mpiClient
-    FlagOddOnesOut wsList, r - 1
+    ComposeChecks wsList, r - 1, mpiName, mpiNo, mpiClient, wantClass
+    FlagOddOnesOut wsList, r - 1, (Len(wantClass) = 0)
     ColourIssues wsList, r - 1
     FormatList wsList, r - 1
 
@@ -318,17 +381,22 @@ Public Sub RefreshScheduleList()
     Exit Sub
 
 Fail:
+    If wasOpen Then Set wbTgt = Nothing     ' never close a workbook you had open
     Recover "Refresh schedule list", wbTgt
 End Sub
 
 
 ' ===========================================================================
-' Button 3 - append a revision line to every ticked schedule
+' Add revision to ticked - append a revision line to every ticked schedule
 '
 ' Each row can carry its own new revision in the "New ..." columns. Anything
 ' left blank there falls back to the block on the Setup sheet, so reissuing
 ' all 24 on one revision and reissuing 6 of them on different ones are the
 ' same operation.
+'
+' The tick is kept afterwards, so "Export ticked to PDF" straight after
+' issues exactly the schedules that were just revised. Pressing this twice
+' does no harm: a revision already in a table is refused.
 ' ===========================================================================
 Public Sub AddRevisionToTicked()
     Dim wsSetup As Worksheet, wsList As Worksheet
@@ -351,7 +419,7 @@ Public Sub AddRevisionToTicked()
 
     If n = 0 Then
         MsgBox "Nothing ticked." & vbCrLf & vbCrLf & _
-               "Put an x in the 'Add?' column next to each schedule being reissued, " & _
+               "Put an x in column A of ScheduleList next to each schedule being reissued, " & _
                "and type the new revision in the 'New ...' columns on that row." & vbCrLf & vbCrLf & _
                "Anything you leave blank is taken from the 'New revision' block on " & _
                "the Setup sheet, so you can fill in the common bits once.", _
@@ -385,7 +453,7 @@ Public Sub AddRevisionToTicked()
                 skipped = skipped + 1
                 LogLine fileName, "Skipped", _
                     "Needs at least a revision and a valid date, on the row or on Setup."
-            Else
+            ElseIf Not OpenInExcel(fileName, skipped) Then
                 Set wbTgt = OpenQuiet(EndSep(folderPath) & fileName, False)
                 If wbTgt Is Nothing Then
                     failed = failed + 1
@@ -404,6 +472,7 @@ Public Sub AddRevisionToTicked()
                         skipped = skipped + 1
                         LogLine fileName, "Skipped", res
                     End If
+                    Set wbTgt = Nothing
                 End If
             End If
         End If
@@ -411,7 +480,9 @@ Public Sub AddRevisionToTicked()
 
     ProgressDone
     EndQuiet
-    ShowSummary "Add revision", done, skipped, failed, Timer - started, ""
+    ShowSummary "Add revision", done, skipped, failed, Timer - started, _
+                IIf(done > 0, "The ticks are kept, so 'Export ticked to PDF' now issues " & _
+                              "these same schedules.", "")
     RefreshScheduleList
     Exit Sub
 
@@ -421,17 +492,18 @@ End Sub
 
 
 ' ===========================================================================
-' Button 4 - copy headers and footers out of one workbook
+' Copy headers & footers from the reference schedule to the ticked ones
 '
-' This is how the security classification banner (OFFICIAL, OFFICIAL-SENSITIVE,
-' CONFIDENTIAL, or none) gets applied consistently: set one schedule up by hand
-' under Page Layout, then push it to the rest.
+' For copying a whole header and footer design across: a logo, a page number,
+' a document reference. For only the security marking, "Set classification"
+' is the direct way and touches nothing else.
 ' ===========================================================================
 Public Sub CopyHeadersFooters()
     Dim wsSetup As Worksheet
     Dim folderPath As String, srcPath As String, fileName As String
     Dim wbSrc As Workbook, wbTgt As Workbook
     Dim files As Collection, i As Long
+    Dim isAll As Boolean, leftOut As String
     Dim backupDir As String
     Dim done As Long, skipped As Long, failed As Long
     Dim started As Double
@@ -451,39 +523,25 @@ Public Sub CopyHeadersFooters()
     srcPath = HeaderSourcePath(wsSetup, folderPath)
     If Len(srcPath) = 0 Then Exit Sub
 
-    imgPath = HeaderImagePath(wsSetup, folderPath)
-    If Len(imgPath) > 0 Then
-        If Not MeasureImage(imgPath, imgW, imgH) Then
-            MsgBox "Could not read that image:" & vbCrLf & imgPath, vbExclamation
-            Exit Sub
-        End If
-        scalePct = CDbl(Opt(wsSetup, LBL_HFSCALE, R_OPT_HFSCALE).Value)
-        If scalePct <= 0 Then scalePct = 20
-        imgW = imgW * scalePct / 100
-        imgH = imgH * scalePct / 100
-    End If
+    If Not HeaderImageSize(wsSetup, folderPath, imgPath, imgW, imgH, scalePct) Then Exit Sub
 
-    Set files = ScheduleFiles(folderPath)
+    Set files = TargetFiles(folderPath, srcPath, isAll, leftOut)
     If files.Count = 0 Then
-        MsgBox "No other Excel files found in:" & vbCrLf & folderPath, vbInformation
+        MsgBox "Nothing to copy to." & vbCrLf & vbCrLf & leftOut, vbInformation, "Copy headers & footers"
         Exit Sub
     End If
 
-    If MsgBox("Copy the headers and footers from" & vbCrLf & vbCrLf & _
-              BaseName(srcPath) & vbCrLf & vbCrLf & _
-              "into the other workbooks in this folder?" & vbCrLf & vbCrLf & _
+    If Not Confirmed("Copy the headers and footers from" & vbCrLf & vbCrLf & _
+              "    " & BaseName(srcPath) & vbCrLf & vbCrLf & _
+              "into " & ScopeText(files, isAll, leftOut) & vbCrLf & _
               "Front Cover, Revision Page and the schedule sheets are matched up " & _
               "separately. Whatever those sheets currently have is replaced." & vbCrLf & vbCrLf & _
               IIf(Len(imgPath) > 0, "Header image: " & BaseName(imgPath) & " at " & _
-                  CStr(scalePct) & "%, top right.", "No header image set."), _
-              vbQuestion + vbYesNo, "Copy headers & footers") = vbNo Then Exit Sub
+                  CStr(scalePct) & "%, top right.", "No header image set.") & vbCrLf & vbCrLf & _
+              BackupLine(wsSetup) & vbCrLf & vbCrLf & "Continue?", _
+              "Copy headers & footers", isAll) Then Exit Sub
 
-    If UCase$(Trim$(CStr(Opt(wsSetup, LBL_BACKUP, R_OPT_BACKUP).Value))) <> "NO" Then
-        backupDir = EndSep(folderPath) & "_backup " & Format$(Now, "yyyy-mm-dd hh-nn")
-        On Error Resume Next
-        MkDir backupDir
-        On Error GoTo 0
-    End If
+    backupDir = MakeBackupDir(wsSetup, folderPath)
 
     On Error GoTo Fail
     LogStart "Copy headers & footers"
@@ -504,16 +562,8 @@ Public Sub CopyHeadersFooters()
         fileName = files(i)
         ProgressStep i - 1, fileName
 
-        If StrComp(EndSep(folderPath) & fileName, srcPath, vbTextCompare) = 0 Then
-            skipped = skipped + 1
-            LogLine fileName, "Skipped", "This is the source workbook."
-        Else
-            If Len(backupDir) > 0 Then
-                On Error Resume Next
-                FileCopy EndSep(folderPath) & fileName, EndSep(backupDir) & fileName
-                On Error GoTo 0
-            End If
-
+        If Not OpenInExcel(fileName, skipped) Then
+            BackUp backupDir, folderPath, fileName
             Set wbTgt = OpenQuiet(EndSep(folderPath) & fileName, False)
             If wbTgt Is Nothing Then
                 failed = failed + 1
@@ -521,6 +571,7 @@ Public Sub CopyHeadersFooters()
             Else
                 oneLog = CopyHeadersFootersTo(wbSrc, wbTgt, imgPath, imgW, imgH)
                 wbTgt.Close SaveChanges:=True
+                Set wbTgt = Nothing
                 If InStr(1, oneLog, "PROBLEM:", vbTextCompare) > 0 Then
                     failed = failed + 1
                     LogLine fileName, "FAILED", oneLog
@@ -533,6 +584,7 @@ Public Sub CopyHeadersFooters()
     Next i
 
     wbSrc.Close SaveChanges:=False
+    Set wbSrc = Nothing
     ProgressDone
     EndQuiet
 
@@ -540,6 +592,9 @@ Public Sub CopyHeadersFooters()
                 IIf(Len(imgPath) > 0, "Header image set from " & BaseName(imgPath) & _
                     ". Check one print preview." & vbCrLf & vbCrLf, "") & _
                 IIf(Len(backupDir) > 0, "Backup: " & backupDir, "")
+
+    ' The Classification column reads the headers and footers.
+    RefreshScheduleList
     Exit Sub
 
 Fail:
@@ -548,6 +603,30 @@ Fail:
     On Error GoTo 0
     Recover "Copy headers & footers", wbTgt
 End Sub
+
+
+' The header logo and the size to put it in at. False means stop: the image
+' set on the Setup sheet could not be read. No image at all is a valid answer
+' and returns True with imgPath "".
+Private Function HeaderImageSize(ByVal wsSetup As Worksheet, ByVal folderPath As String, _
+                                 ByRef imgPath As String, ByRef imgW As Double, _
+                                 ByRef imgH As Double, ByRef scalePct As Double) As Boolean
+    imgPath = HeaderImagePath(wsSetup, folderPath)
+    If Len(imgPath) > 0 Then
+        If Not MeasureImage(imgPath, imgW, imgH) Then
+            MsgBox "Could not read that image:" & vbCrLf & imgPath, vbExclamation
+            Exit Function
+        End If
+        scalePct = 0
+        On Error Resume Next
+        scalePct = CDbl(Opt(wsSetup, LBL_HFSCALE, R_OPT_HFSCALE).Value)
+        On Error GoTo 0
+        If scalePct <= 0 Then scalePct = 20
+        imgW = imgW * scalePct / 100
+        imgH = imgH * scalePct / 100
+    End If
+    HeaderImageSize = True
+End Function
 
 
 ' The workbook to copy from. Remembered on the Setup sheet, so re-running
@@ -655,7 +734,7 @@ End Function
 
 
 ' ===========================================================================
-' Button 5 - copy the Front Cover and Revision Page from a reference schedule
+' Copy cover & revision page from the reference schedule to the ticked ones
 '
 ' For a change to the common pages themselves: dropping a security
 ' classification, moving a logo, rewording the cover. Set one schedule up by
@@ -670,6 +749,7 @@ Public Sub CopyCommonSheets()
     Dim folderPath As String, srcPath As String, fileName As String
     Dim wbSrc As Workbook, wbTgt As Workbook
     Dim files As Collection, i As Long
+    Dim isAll As Boolean, leftOut As String
     Dim backupDir As String
     Dim done As Long, skipped As Long, failed As Long
     Dim started As Double
@@ -691,35 +771,28 @@ Public Sub CopyCommonSheets()
     srcPath = HeaderSourcePath(wsSetup, folderPath)
     If Len(srcPath) = 0 Then Exit Sub
 
-    Set files = ChosenTargets(folderPath, srcPath)
-    If files Is Nothing Then Exit Sub
+    Set files = TargetFiles(folderPath, srcPath, isAll, leftOut)
     If files.Count = 0 Then
-        MsgBox "Nothing to copy to.", vbInformation
+        MsgBox "Nothing to copy to." & vbCrLf & vbCrLf & leftOut, vbInformation, _
+               "Copy cover & revision page"
         Exit Sub
     End If
 
-    If MsgBox("Replace the Front Cover and Revision Page in " & files.Count & _
-              " schedule(s) with the ones from" & vbCrLf & vbCrLf & _
-              BaseName(srcPath) & vbCrLf & vbCrLf & _
+    If Not Confirmed("Replace the Front Cover and Revision Page in " & _
+              ScopeText(files, isAll, leftOut) & vbCrLf & _
+              "with the ones from" & vbCrLf & vbCrLf & _
+              "    " & BaseName(srcPath) & vbCrLf & vbCrLf & _
               "Each schedule keeps its own:" & vbCrLf & _
               "  - schedule title" & vbCrLf & _
               "  - full revision history" & vbCrLf & _
               "  - document type, Delref, BSUID, trigger events" & vbCrLf & vbCrLf & _
               "Everything else on those two sheets is replaced, and the links " & _
               "are rebuilt to point at each schedule's own data." & vbCrLf & vbCrLf & _
-              IIf(UCase$(Trim$(CStr(Opt(wsSetup, LBL_BACKUP, R_OPT_BACKUP).Value))) = "NO", _
-                  "Backups are switched OFF on the Setup sheet.", _
-                  "A backup is taken first."), _
-              vbExclamation + vbYesNo + vbDefaultButton2, "Copy cover & revision page") = vbNo Then Exit Sub
+              BackupLine(wsSetup) & vbCrLf & vbCrLf & "Continue?", _
+              "Copy cover & revision page", True) Then Exit Sub
 
     statuses = GatherStatuses(wsSetup)
-
-    If UCase$(Trim$(CStr(Opt(wsSetup, LBL_BACKUP, R_OPT_BACKUP).Value))) <> "NO" Then
-        backupDir = EndSep(folderPath) & "_backup " & Format$(Now, "yyyy-mm-dd hh-nn")
-        On Error Resume Next
-        MkDir backupDir
-        On Error GoTo 0
-    End If
+    backupDir = MakeBackupDir(wsSetup, folderPath)
 
     On Error GoTo Fail
     LogStart "Copy cover & revision page"
@@ -738,38 +811,37 @@ Public Sub CopyCommonSheets()
         fileName = files(i)
         ProgressStep i - 1, fileName
 
-        If Len(backupDir) > 0 Then
-            On Error Resume Next
-            FileCopy EndSep(folderPath) & fileName, EndSep(backupDir) & fileName
-            On Error GoTo 0
-        End If
-
-        Set wbTgt = OpenQuiet(EndSep(folderPath) & fileName, False)
-        If wbTgt Is Nothing Then
-            failed = failed + 1
-            LogLine fileName, "FAILED", "Could not open the file."
-        Else
-            ' Unlike the other buttons this one does not require a Revision
-            ' Page: giving a bare schedule its common sheets is the job.
-            oneLog = CopyCommonSheetsTo(wbSrc, wbTgt, fileName)
-
-            If InStr(1, oneLog, "PROBLEM:", vbTextCompare) > 0 Then
-                wbTgt.Close SaveChanges:=False
+        If Not OpenInExcel(fileName, skipped) Then
+            BackUp backupDir, folderPath, fileName
+            Set wbTgt = OpenQuiet(EndSep(folderPath) & fileName, False)
+            If wbTgt Is Nothing Then
                 failed = failed + 1
-                LogLine fileName, "FAILED", oneLog & "Nothing was saved."
+                LogLine fileName, "FAILED", "Could not open the file."
             Else
-                ' Rebuild every link locally, so none point at the reference.
-                oneLog = oneLog & RepairWorkbook(wbTgt, ThisWorkbook.FullName, SH_SETUP, _
-                                                 projNameRef, projNoRef, clientRef, statuses, _
-                                                 ProjectFields(wsSetup))
-                wbTgt.Close SaveChanges:=True
-                done = done + 1
-                LogLine fileName, "OK", oneLog
+                ' Unlike the other buttons this one does not require a Revision
+                ' Page: giving a bare schedule its common sheets is the job.
+                oneLog = CopyCommonSheetsTo(wbSrc, wbTgt, fileName)
+
+                If InStr(1, oneLog, "PROBLEM:", vbTextCompare) > 0 Then
+                    wbTgt.Close SaveChanges:=False
+                    failed = failed + 1
+                    LogLine fileName, "FAILED", oneLog & "Nothing was saved."
+                Else
+                    ' Rebuild every link locally, so none point at the reference.
+                    oneLog = oneLog & RepairWorkbook(wbTgt, ThisWorkbook.FullName, SH_SETUP, _
+                                                     projNameRef, projNoRef, clientRef, statuses, _
+                                                     ProjectFields(wsSetup))
+                    wbTgt.Close SaveChanges:=True
+                    done = done + 1
+                    LogLine fileName, "OK", oneLog
+                End If
+                Set wbTgt = Nothing
             End If
         End If
     Next i
 
     wbSrc.Close SaveChanges:=False
+    Set wbSrc = Nothing
     ProgressDone
     EndQuiet
 
@@ -786,56 +858,451 @@ Fail:
 End Sub
 
 
-' Which schedules to act on: the ones ticked on ScheduleList, or all of them.
-' Returns Nothing if the user backs out.
-Private Function ChosenTargets(ByVal folderPath As String, ByVal srcPath As String) As Collection
-    Dim all As Collection, picked As New Collection
-    Dim wsList As Worksheet
-    Dim r As Long, lastRow As Long, ticked As Long
-    Dim answer As VbMsgBoxResult
-    Dim f As String
-    Dim i As Long
+' ===========================================================================
+' Set up new schedule(s) - everything a schedule new to the folder needs, in
+' one pass, for the ticked rows only
+'
+' What used to be four buttons pressed in the right order, which nobody
+' remembers after a month away. Each ticked file is opened once and gets:
+'
+'   1. Front Cover and Revision Page from the reference schedule (its own
+'      title and any revision history are kept, as with the copy button)
+'   2. links set up to this file
+'   3. headers and footers from the reference, logo included
+'   4. sheets put in order, Metadata hidden
+'
+' then saved once. A file that fails any step is closed without saving, so a
+' half-done schedule is never written. It never runs on everything: with
+' nothing ticked it explains how to tick, and stops.
+' ===========================================================================
+Public Sub SetupNewSchedules()
+    Dim wsSetup As Worksheet
+    Dim folderPath As String, srcPath As String, fileName As String
+    Dim wbSrc As Workbook, wbTgt As Workbook
+    Dim files As Collection, i As Long
+    Dim isAll As Boolean, leftOut As String
+    Dim backupDir As String
+    Dim done As Long, skipped As Long, failed As Long
+    Dim started As Double
+    Dim oneLog As String, stepLog As String
+    Dim projNameRef As String, projNoRef As String, clientRef As String
+    Dim statuses As Variant
+    Dim imgPath As String
+    Dim imgW As Double, imgH As Double, scalePct As Double
+    Const JOB As String = "Set up new schedule(s)"
 
-    Set all = ScheduleFiles(folderPath)
+    Set wsSetup = GetSheet(ThisWorkbook, SH_SETUP)
+    If wsSetup Is Nothing Then
+        MsgBox "No Setup sheet. Run InstallTool first.", vbExclamation
+        Exit Sub
+    End If
+
+    If Not SetupRefs(wsSetup, projNameRef, projNoRef, clientRef) Then Exit Sub
+
+    folderPath = SchedulesFolder()
+    If Len(folderPath) = 0 Then Exit Sub
+
+    ' Ticks first, before asking for a reference or a logo, so someone who
+    ' has not ticked anything is told how before being asked anything else.
+    Set files = TargetFiles(folderPath, "", isAll, leftOut)
+    If isAll Or files.Count = 0 Then
+        MsgBox "Nothing is ticked." & vbCrLf & vbCrLf & _
+               "To bring a new schedule in:" & vbCrLf & _
+               "  1. Put the file in the project folder." & vbCrLf & _
+               "  2. Press 'Refresh schedule list'. It shows up as 'NOT A SCHEDULE YET'." & vbCrLf & _
+               "  3. Put an x in column A next to it on ScheduleList." & vbCrLf & _
+               "  4. Press this button again." & vbCrLf & vbCrLf & _
+               "This button only ever works on ticked rows." & _
+               IIf(Len(leftOut) > 0, vbCrLf & vbCrLf & leftOut, ""), vbInformation, JOB
+        Exit Sub
+    End If
+
+    srcPath = HeaderSourcePath(wsSetup, folderPath)
+    If Len(srcPath) = 0 Then Exit Sub
+
+    ' TargetFiles was asked without the reference so the message above could
+    ' come first. Take it out now if it is ticked.
+    For i = files.Count To 1 Step -1
+        If IsSamePath(EndSep(folderPath) & files(i), srcPath) Then
+            files.Remove i
+            leftOut = leftOut & "The reference schedule is ticked; it is the one being " & _
+                   "copied from, so it is left out. "
+        End If
+    Next i
+    If files.Count = 0 Then
+        MsgBox "Only the reference schedule is ticked, and it is the one being copied from." & _
+               vbCrLf & vbCrLf & "Tick the new schedule(s) instead.", vbInformation, JOB
+        Exit Sub
+    End If
+
+    If Not HeaderImageSize(wsSetup, folderPath, imgPath, imgW, imgH, scalePct) Then Exit Sub
+
+    If Not Confirmed("Set up " & ScopeText(files, False, leftOut) & vbCrLf & _
+              "using " & BaseName(srcPath) & " as the reference. Each one gets:" & vbCrLf & vbCrLf & _
+              "  1. the reference's Front Cover and Revision Page" & vbCrLf & _
+              "     (its own title and any revision history are kept)" & vbCrLf & _
+              "  2. its links set up to this file" & vbCrLf & _
+              "  3. the reference's headers and footers" & _
+              IIf(Len(imgPath) > 0, ", with " & BaseName(imgPath), "") & vbCrLf & _
+              "  4. its sheets put in order, Metadata hidden" & vbCrLf & vbCrLf & _
+              "Then it is saved, once. A file that fails any step is not saved at all." & _
+              vbCrLf & vbCrLf & BackupLine(wsSetup) & vbCrLf & vbCrLf & "Continue?", _
+              JOB, False) Then Exit Sub
+
+    statuses = GatherStatuses(wsSetup)
+    backupDir = MakeBackupDir(wsSetup, folderPath)
+
+    On Error GoTo Fail
+    LogStart JOB
+    BeginQuiet xlCalculationAutomatic
+    ProgressStart files.Count, "Setting up new schedules"
+    started = Timer
+
+    Set wbSrc = OpenQuiet(srcPath, True)
+    If wbSrc Is Nothing Then
+        EndQuiet
+        MsgBox "Could not open the reference workbook:" & vbCrLf & srcPath, vbExclamation
+        Exit Sub
+    End If
+
+    For i = 1 To files.Count
+        fileName = files(i)
+        ProgressStep i - 1, fileName
+
+        If Not OpenInExcel(fileName, skipped) Then
+            BackUp backupDir, folderPath, fileName
+            Set wbTgt = OpenQuiet(EndSep(folderPath) & fileName, False)
+            If wbTgt Is Nothing Then
+                failed = failed + 1
+                LogLine fileName, "FAILED", "Could not open the file."
+            Else
+                oneLog = "1. " & CopyCommonSheetsTo(wbSrc, wbTgt, fileName)
+
+                If InStr(1, oneLog, "PROBLEM:", vbTextCompare) = 0 Then
+                    oneLog = oneLog & "2. " & _
+                             RepairWorkbook(wbTgt, ThisWorkbook.FullName, SH_SETUP, _
+                                            projNameRef, projNoRef, clientRef, statuses, _
+                                            ProjectFields(wsSetup)) & " "
+                    stepLog = CopyHeadersFootersTo(wbSrc, wbTgt, imgPath, imgW, imgH)
+                    oneLog = oneLog & "3. " & stepLog
+                    If InStr(1, stepLog, "PROBLEM:", vbTextCompare) = 0 Then
+                        oneLog = oneLog & "4. " & TidySheetsIn(wbTgt)
+                    End If
+                End If
+
+                If InStr(1, oneLog, "PROBLEM:", vbTextCompare) > 0 Then
+                    wbTgt.Close SaveChanges:=False
+                    failed = failed + 1
+                    LogLine fileName, "FAILED", oneLog & " Nothing was saved."
+                Else
+                    wbTgt.Close SaveChanges:=True
+                    done = done + 1
+                    LogLine fileName, "OK", oneLog
+                End If
+                Set wbTgt = Nothing
+            End If
+        End If
+    Next i
+
+    wbSrc.Close SaveChanges:=False
+    Set wbSrc = Nothing
+    ProgressDone
+    EndQuiet
+
+    ShowSummary JOB, done, skipped, failed, Timer - started, _
+                "Next: check the Classification column on ScheduleList, and add a " & _
+                "revision if this schedule is being issued." & vbCrLf & vbCrLf & _
+                IIf(Len(backupDir) > 0, "Backup: " & backupDir, "")
+    RefreshScheduleList
+    Exit Sub
+
+Fail:
+    On Error Resume Next
+    If Not wbSrc Is Nothing Then wbSrc.Close SaveChanges:=False
+    On Error GoTo 0
+    Recover JOB, wbTgt
+End Sub
+
+
+' ===========================================================================
+' Set classification - put the marking from the Setup sheet on the ticked
+' schedules, and nothing else
+'
+' Copy headers & footers can do this too, but only by copying the whole
+' header and footer from a reference, which is a blunt tool for changing one
+' word and easy to point at the wrong reference. This changes the marking
+' where it already is and adds it where it is missing. See
+' SetClassificationIn for exactly what it touches.
+' ===========================================================================
+Public Sub SetClassification()
+    Dim wsSetup As Worksheet
+    Dim folderPath As String, fileName As String
+    Dim wbTgt As Workbook
+    Dim files As Collection, i As Long
+    Dim isAll As Boolean, leftOut As String
+    Dim wanted As String, shown As String
+    Dim backupDir As String
+    Dim done As Long, skipped As Long, failed As Long
+    Dim started As Double
+    Dim oneLog As String
+    Dim changed As Long
+    Const JOB As String = "Set classification"
+
+    Set wsSetup = GetSheet(ThisWorkbook, SH_SETUP)
+    If wsSetup Is Nothing Then
+        MsgBox "No Setup sheet. Run InstallTool first.", vbExclamation
+        Exit Sub
+    End If
+
+    wanted = ClassificationSetting(wsSetup)
+    If Len(wanted) = 0 Or (wanted <> "NONE" And Not IsKnownMarking(wanted)) Then
+        MsgBox "Choose the marking in '" & LBL_CLASS & "' on the Setup sheet first:" & vbCrLf & _
+               "None, OFFICIAL, OFFICIAL-SENSITIVE, CONFIDENTIAL or COMMERCIAL IN CONFIDENCE." & _
+               vbCrLf & vbCrLf & "Then tick the schedules on ScheduleList and press this again.", _
+               vbExclamation, JOB
+        wsSetup.Activate
+        Opt(wsSetup, LBL_CLASS, R_OPT_CLASS).Select
+        Exit Sub
+    End If
+    If wanted = "NONE" Then
+        shown = "no marking"
+        wanted = ""
+    Else
+        wanted = NormaliseMarking(wanted)
+        shown = wanted
+    End If
+
+    folderPath = SchedulesFolder()
+    If Len(folderPath) = 0 Then Exit Sub
+
+    Set files = TargetFiles(folderPath, "", isAll, leftOut)
+    If files.Count = 0 Then
+        MsgBox "Nothing to change." & vbCrLf & vbCrLf & leftOut, vbInformation, JOB
+        Exit Sub
+    End If
+
+    If Not Confirmed("Set the security classification to " & shown & " on " & _
+              ScopeText(files, isAll, leftOut) & vbCrLf & _
+              IIf(Len(wanted) = 0, _
+                  "Every marking is taken out of the headers and footers, and any cell " & _
+                  "on the cover or revision page that says nothing but a marking is " & _
+                  "emptied.", _
+                  "Every marking already in a header or footer, or in a cell of its own " & _
+                  "on the cover or revision page, becomes " & wanted & ", keeping its font " & _
+                  "and size. A sheet with no marking at all gets " & wanted & " in the " & _
+                  "centre of its footer, and of its header if that is empty.") & vbCrLf & vbCrLf & _
+              "Nothing else in the headers and footers is touched: not the logo, the " & _
+              "page numbers, orientation or margins. Each file is read back afterwards " & _
+              "to prove it took." & vbCrLf & vbCrLf & _
+              BackupLine(wsSetup) & vbCrLf & vbCrLf & "Continue?", JOB, isAll) Then Exit Sub
+
+    backupDir = MakeBackupDir(wsSetup, folderPath)
+
+    On Error GoTo Fail
+    LogStart JOB & " to " & shown
+    BeginQuiet xlCalculationManual
+    ProgressStart files.Count, "Setting classification"
+    started = Timer
+
+    For i = 1 To files.Count
+        fileName = files(i)
+        ProgressStep i - 1, fileName
+
+        If Not OpenInExcel(fileName, skipped) Then
+            BackUp backupDir, folderPath, fileName
+            Set wbTgt = OpenQuiet(EndSep(folderPath) & fileName, False)
+            If wbTgt Is Nothing Then
+                failed = failed + 1
+                LogLine fileName, "FAILED", "Could not open the file."
+            Else
+                oneLog = SetClassificationIn(wbTgt, wanted, changed)
+                If InStr(1, oneLog, "PROBLEM:", vbTextCompare) > 0 Then
+                    wbTgt.Close SaveChanges:=False
+                    failed = failed + 1
+                    LogLine fileName, "FAILED", oneLog & "Nothing was saved."
+                ElseIf changed = 0 Then
+                    wbTgt.Close SaveChanges:=False
+                    skipped = skipped + 1
+                    LogLine fileName, "Unchanged", "Already " & shown & " throughout."
+                Else
+                    wbTgt.Close SaveChanges:=True
+                    done = done + 1
+                    LogLine fileName, "OK", oneLog
+                End If
+                Set wbTgt = Nothing
+            End If
+        End If
+    Next i
+
+    ProgressDone
+    EndQuiet
+    ShowSummary JOB, done, skipped, failed, Timer - started, _
+                IIf(Len(backupDir) > 0, "Backup: " & backupDir, "")
+    RefreshScheduleList
+    Exit Sub
+
+Fail:
+    Recover JOB, wbTgt
+End Sub
+
+
+' The Security classification option, upper case. "" when blank, "NONE" for
+' None. Blank means "do not check it against anything".
+Private Function ClassificationSetting(ByVal wsSetup As Worksheet) As String
+    ClassificationSetting = UCase$(Trim$(CStr(Opt(wsSetup, LBL_CLASS, R_OPT_CLASS).Value)))
+End Function
+
+
+' ===========================================================================
+' Which schedules a button works on
+'
+' One rule for every button that changes a schedule: the rows with an x in
+' column A of ScheduleList, and only those. With nothing ticked it is every
+' workbook in the folder, and the confirmation box says ALL in capitals and
+' defaults to No. Most of what these buttons do cannot be undone except from
+' the backup, so doing the one schedule that needs it, rather than all 26, is
+' the safer habit and the tool makes it the easy one.
+' ===========================================================================
+
+' The file names to work on. isAll comes back True when nothing was ticked.
+' `skipPath`, the reference schedule, is never included. `leftOut` says what was
+' ticked but left out, for the confirmation box.
+Private Function TargetFiles(ByVal folderPath As String, ByVal skipPath As String, _
+                             ByRef isAll As Boolean, ByRef leftOut As String) As Collection
+    Dim c As New Collection
+    Dim all As Collection
+    Dim wsList As Worksheet
+    Dim r As Long, lastRow As Long, i As Long
+    Dim f As String, gone As String
+    Dim tickedAny As Boolean
+
+    isAll = False
+    leftOut = ""
+    Set TargetFiles = c
 
     Set wsList = GetSheet(ThisWorkbook, SH_LIST)
     If Not wsList Is Nothing Then
         lastRow = wsList.Cells(wsList.Rows.Count, C_FILE).End(xlUp).Row
         For r = 2 To lastRow
-            If IsTicked(wsList, r) Then ticked = ticked + 1
+            If IsTicked(wsList, r) Then
+                f = AsText(wsList.Cells(r, C_FILE).Value)
+                If Len(f) > 0 Then
+                    tickedAny = True
+                    If IsSamePath(EndSep(folderPath) & f, skipPath) Then
+                        leftOut = leftOut & "The reference schedule (" & f & ") is ticked; it is " & _
+                               "the one being copied from, so it is left out. "
+                    ElseIf Not FileExists(EndSep(folderPath) & f) Then
+                        gone = gone & f & ", "
+                    Else
+                        c.Add f
+                    End If
+                End If
+            End If
         Next r
     End If
 
-    If ticked > 0 Then
-        answer = MsgBox(ticked & " schedule(s) are ticked on ScheduleList." & vbCrLf & vbCrLf & _
-                        "Yes  - only those " & ticked & vbCrLf & _
-                        "No   - all " & all.Count & " in the folder" & vbCrLf & _
-                        "Cancel - stop", _
-                        vbQuestion + vbYesNoCancel, "Which schedules?")
-        If answer = vbCancel Then Exit Function
-        If answer = vbYes Then
-            For r = 2 To lastRow
-                If IsTicked(wsList, r) Then
-                    f = AsText(wsList.Cells(r, C_FILE).Value)
-                    If Len(f) > 0 And StrComp(EndSep(folderPath) & f, srcPath, vbTextCompare) <> 0 Then
-                        picked.Add f
-                    End If
-                End If
-            Next r
-            Set ChosenTargets = picked
-            Exit Function
-        End If
+    If Len(gone) > 0 Then
+        leftOut = leftOut & "Ticked but no longer in the folder, so left out: " & _
+               Left$(gone, Len(gone) - 2) & ". Refresh the list to tidy it up. "
+    End If
+    If tickedAny Then Exit Function
+
+    isAll = True
+    Set all = ScheduleFiles(folderPath)
+    For i = 1 To all.Count
+        If Not IsSamePath(EndSep(folderPath) & all(i), skipPath) Then c.Add all(i)
+    Next i
+End Function
+
+
+' How a confirmation box names what is about to be done. Ticked files are
+' listed by name, so what you are agreeing to is on the screen.
+Private Function ScopeText(ByVal files As Collection, ByVal isAll As Boolean, _
+                           ByVal leftOut As String) As String
+    Dim s As String
+    Dim i As Long
+
+    If isAll Then
+        s = "ALL " & files.Count & " workbook(s) in the folder, because nothing is " & _
+            "ticked on ScheduleList." & vbCrLf & vbCrLf & _
+            "To do only some, press No, put an x in column A of ScheduleList next " & _
+            "to each one, and press this button again." & vbCrLf
+    Else
+        s = "the " & files.Count & " schedule(s) ticked on ScheduleList:" & vbCrLf
+        For i = 1 To files.Count
+            If i > 12 Then
+                s = s & "    ...and " & (files.Count - 12) & " more" & vbCrLf
+                Exit For
+            End If
+            s = s & "    " & files(i) & vbCrLf
+        Next i
     End If
 
-    For i = 1 To all.Count
-        If StrComp(EndSep(folderPath) & all(i), srcPath, vbTextCompare) <> 0 Then picked.Add all(i)
-    Next i
-    Set ChosenTargets = picked
+    If Len(leftOut) > 0 Then s = s & vbCrLf & leftOut & vbCrLf
+    ScopeText = s
+End Function
+
+
+' The confirmation every button ends its questions with. Defaults to No when
+' the run covers everything.
+Private Function Confirmed(ByVal msg As String, ByVal title As String, _
+                           ByVal isAll As Boolean) As Boolean
+    Dim style As Long
+    style = vbQuestion + vbYesNo
+    If isAll Then style = vbExclamation + vbYesNo + vbDefaultButton2
+    Confirmed = (MsgBox(msg, style, title) = vbYes)
+End Function
+
+
+Private Function IsSamePath(ByVal a As String, ByVal b As String) As Boolean
+    If Len(b) = 0 Then Exit Function
+    IsSamePath = (StrComp(a, b, vbTextCompare) = 0)
+End Function
+
+
+' A workbook already open in Excel is never opened again underneath you:
+' Workbooks.Open hands back your copy, and closing it would throw away
+' whatever is unsaved in it. Clicking a file name on ScheduleList opens it, so
+' this is easy to run into. Logs the skip and returns True.
+Private Function OpenInExcel(ByVal fileName As String, ByRef skipped As Long) As Boolean
+    If Not IsWorkbookOpen(fileName) Then Exit Function
+    skipped = skipped + 1
+    LogLine fileName, "Skipped", "Open in Excel. Close it and run this again."
+    OpenInExcel = True
+End Function
+
+
+' The backup folder for this run, or "" when backups are switched off.
+Private Function MakeBackupDir(ByVal wsSetup As Worksheet, ByVal folderPath As String) As String
+    Dim d As String
+    If UCase$(Trim$(CStr(Opt(wsSetup, LBL_BACKUP, R_OPT_BACKUP).Value))) = "NO" Then Exit Function
+    d = EndSep(folderPath) & "_backup " & Format$(Now, "yyyy-mm-dd hh-nn")
+    On Error Resume Next
+    MkDir d
+    On Error GoTo 0
+    MakeBackupDir = d
+End Function
+
+
+Private Sub BackUp(ByVal backupDir As String, ByVal folderPath As String, ByVal fileName As String)
+    If Len(backupDir) = 0 Then Exit Sub
+    On Error Resume Next
+    FileCopy EndSep(folderPath) & fileName, EndSep(backupDir) & fileName
+    On Error GoTo 0
+End Sub
+
+
+Private Function BackupLine(ByVal wsSetup As Worksheet) As String
+    If UCase$(Trim$(CStr(Opt(wsSetup, LBL_BACKUP, R_OPT_BACKUP).Value))) = "NO" Then
+        BackupLine = "Backups are switched OFF on the Setup sheet."
+    Else
+        BackupLine = "Each file is backed up first."
+    End If
 End Function
 
 
 ' ===========================================================================
-' Button 6 - rename schedule files
+' Rename files
 '
 ' Two presses. The first fills in the New FileName column by find and replace
 ' so you can read what it intends to do; the second does it. Typing a name in
@@ -903,12 +1370,9 @@ Private Sub ProposeNames(ByVal wsList As Worksheet, ByVal folderPath As String)
         "Rename files", Type:=2)
     If VarType(replaceText) = vbBoolean Then Exit Sub
 
+    ' The same rule as every other button: ticked rows only, if any are.
+    ' Nothing is renamed here anyway, only proposed for you to read.
     onlyTicked = (TickedCount(wsList) > 0)
-    If onlyTicked Then
-        If MsgBox(TickedCount(wsList) & " schedule(s) are ticked." & vbCrLf & vbCrLf & _
-                  "Yes - only those." & vbCrLf & "No  - every schedule on the list.", _
-                  vbQuestion + vbYesNo, "Which schedules?") = vbNo Then onlyTicked = False
-    End If
 
     lastRow = wsList.Cells(wsList.Rows.Count, C_FILE).End(xlUp).Row
     For r = 2 To lastRow
@@ -928,10 +1392,12 @@ Private Sub ProposeNames(ByVal wsList As Worksheet, ByVal folderPath As String)
     wsList.Activate
 
     If n = 0 Then
-        MsgBox """" & findText & """ is not in any of those file names. Nothing to do.", _
+        MsgBox """" & findText & """ is not in any of " & _
+               IIf(onlyTicked, "the ticked", "the") & " file names. Nothing to do.", _
                vbInformation, "Rename files"
     Else
-        MsgBox n & " file name(s) proposed in the 'New FileName' column." & vbCrLf & vbCrLf & _
+        MsgBox n & " file name(s) proposed in the 'New FileName' column" & _
+               IIf(onlyTicked, ", for the ticked rows only.", ".") & vbCrLf & vbCrLf & _
                "Read them, edit any you want to change, clear any you do not want, " & _
                "then press 'Rename files' again to do it.", _
                vbInformation, "Rename files - review"
@@ -1186,7 +1652,7 @@ End Function
 
 
 ' ===========================================================================
-' Button 7 - tidy the sheets
+' Tidy sheets on the ticked schedules
 '
 ' Every workbook the same way round: Front Cover, Revision Page, the schedule,
 ' then Metadata hidden at the end. A lone schedule sheet still called Sheet1
@@ -1199,6 +1665,7 @@ Public Sub TidySheets()
     Dim folderPath As String, fileName As String
     Dim wbTgt As Workbook
     Dim files As Collection, i As Long
+    Dim isAll As Boolean, leftOut As String
     Dim backupDir As String
     Dim done As Long, skipped As Long, failed As Long
     Dim started As Double
@@ -1213,27 +1680,22 @@ Public Sub TidySheets()
     folderPath = SchedulesFolder()
     If Len(folderPath) = 0 Then Exit Sub
 
-    Set files = ScheduleFiles(folderPath)
+    Set files = TargetFiles(folderPath, "", isAll, leftOut)
     If files.Count = 0 Then
-        MsgBox "No Excel files found in:" & vbCrLf & folderPath, vbInformation
+        MsgBox "Nothing to tidy." & vbCrLf & vbCrLf & leftOut, vbInformation, "Tidy sheets"
         Exit Sub
     End If
 
-    If MsgBox("Tidy the sheets in " & files.Count & " workbook(s)?" & vbCrLf & vbCrLf & _
+    If Not Confirmed("Tidy the sheets in " & ScopeText(files, isAll, leftOut) & vbCrLf & _
               "Order becomes Front Cover, Revision Page, Schedule, then Metadata " & _
               "hidden at the end." & vbCrLf & vbCrLf & _
               "A workbook with one schedule sheet has it renamed to 'Schedule'. " & _
               "One with several keeps its names, since they are the only thing " & _
               "telling those sheets apart." & vbCrLf & vbCrLf & _
               "Only names, order and visibility change. No cell is touched.", _
-              vbQuestion + vbYesNo, "Tidy sheets") = vbNo Then Exit Sub
+              "Tidy sheets", isAll) Then Exit Sub
 
-    If UCase$(Trim$(CStr(Opt(wsSetup, LBL_BACKUP, R_OPT_BACKUP).Value))) <> "NO" Then
-        backupDir = EndSep(folderPath) & "_backup " & Format$(Now, "yyyy-mm-dd hh-nn")
-        On Error Resume Next
-        MkDir backupDir
-        On Error GoTo 0
-    End If
+    backupDir = MakeBackupDir(wsSetup, folderPath)
 
     On Error GoTo Fail
     LogStart "Tidy sheets"
@@ -1245,31 +1707,29 @@ Public Sub TidySheets()
         fileName = files(i)
         ProgressStep i - 1, fileName
 
-        If Len(backupDir) > 0 Then
-            On Error Resume Next
-            FileCopy EndSep(folderPath) & fileName, EndSep(backupDir) & fileName
-            On Error GoTo 0
-        End If
-
-        Set wbTgt = OpenQuiet(EndSep(folderPath) & fileName, False)
-        If wbTgt Is Nothing Then
-            failed = failed + 1
-            LogLine fileName, "FAILED", "Could not open the file."
-        Else
-            oneLog = TidySheetsIn(wbTgt)
-
-            If InStr(1, oneLog, "PROBLEM:", vbTextCompare) > 0 Then
-                wbTgt.Close SaveChanges:=False
+        If Not OpenInExcel(fileName, skipped) Then
+            BackUp backupDir, folderPath, fileName
+            Set wbTgt = OpenQuiet(EndSep(folderPath) & fileName, False)
+            If wbTgt Is Nothing Then
                 failed = failed + 1
-                LogLine fileName, "FAILED", oneLog & "Nothing was saved."
-            ElseIf Len(oneLog) = 0 Then
-                wbTgt.Close SaveChanges:=False
-                skipped = skipped + 1
-                LogLine fileName, "Unchanged", "Already tidy."
+                LogLine fileName, "FAILED", "Could not open the file."
             Else
-                wbTgt.Close SaveChanges:=True
-                done = done + 1
-                LogLine fileName, "OK", oneLog
+                oneLog = TidySheetsIn(wbTgt)
+
+                If InStr(1, oneLog, "PROBLEM:", vbTextCompare) > 0 Then
+                    wbTgt.Close SaveChanges:=False
+                    failed = failed + 1
+                    LogLine fileName, "FAILED", oneLog & "Nothing was saved."
+                ElseIf Len(oneLog) = 0 Then
+                    wbTgt.Close SaveChanges:=False
+                    skipped = skipped + 1
+                    LogLine fileName, "Unchanged", "Already tidy."
+                Else
+                    wbTgt.Close SaveChanges:=True
+                    done = done + 1
+                    LogLine fileName, "OK", oneLog
+                End If
+                Set wbTgt = Nothing
             End If
         End If
     Next i
@@ -1286,59 +1746,109 @@ End Sub
 
 
 ' ===========================================================================
-' Button 8 - write a PDF of each schedule
+' Export ticked to PDF
 '
-' Unlike every other button this one only reads. It takes the schedules in the
-' folder or the ones you pick, and writes one PDF per workbook covering every
-' sheet in it, or one per sheet.
+' Unlike every other button this one only reads. The ticked rows on
+' ScheduleList go to _pdf in the project folder after one confirmation, so
+' re-issuing the same set is two clicks. With nothing ticked it falls back to
+' asking: a whole folder, which can be anywhere, or files you pick.
 ' ===========================================================================
 Public Sub ExportToPdf()
-    Dim files As Collection
+    Dim files As Collection, names As Collection
     Dim outFolder As String, clash As String
     Dim perSheet As Boolean, overwrite As Boolean
     Dim i As Long
     Dim fullPath As String, fileName As String
+    Dim folderPath As String
+    Dim isAll As Boolean, leftOut As String
+    Dim fromTicks As Boolean, askedAll As Boolean
+    Dim answer As VbMsgBoxResult
     Dim wbTgt As Workbook
     Dim notes As String
     Dim made As Long, madeBefore As Long
     Dim done As Long, skipped As Long, failed As Long
     Dim started As Double
 
-    Set files = ChooseFilesToExport()
-    If files Is Nothing Then Exit Sub          ' cancelled
-    If files.Count = 0 Then
-        MsgBox "No Excel files to export.", vbInformation, "Export to PDF"
-        Exit Sub
+    ' --- the ticked rows, when there are any ------------------------------
+    folderPath = SchedulesFolder(False)
+    If Len(folderPath) > 0 Then
+        Set names = TargetFiles(folderPath, "", isAll, leftOut)
+        fromTicks = Not isAll
     End If
 
-    ' Found before anything is written, the way the rename button checks its
-    ' whole batch first. Two files of the same name from different folders
-    ' produce one PDF, and the second run over it would look like it worked.
-    clash = DuplicateName(files)
-    If Len(clash) > 0 Then
-        MsgBox "Two of the files chosen are both called:" & vbCrLf & vbCrLf & clash & _
-               vbCrLf & vbCrLf & "They would write the same PDF, so the second would " & _
-               "quietly replace the first. Export them in separate runs, or into " & _
-               "different folders.", vbExclamation, "Export to PDF"
-        Exit Sub
+    If fromTicks Then
+        If names.Count = 0 Then
+            MsgBox "Nothing to export." & vbCrLf & vbCrLf & leftOut, vbInformation, "Export to PDF"
+            Exit Sub
+        End If
+
+        Set files = New Collection
+        For i = 1 To names.Count
+            files.Add EndSep(folderPath) & names(i)
+        Next i
+
+        outFolder = EndSep(folderPath) & PDF_SUBFOLDER
+        answer = MsgBox("Export " & ScopeText(names, False, leftOut) & vbCrLf & _
+                        "to" & vbCrLf & "    " & outFolder & vbCrLf & vbCrLf & _
+                        "One PDF per workbook, replacing any PDF of the same name " & _
+                        "already there. Nothing is written back to the schedules." & vbCrLf & vbCrLf & _
+                        "Yes  - export" & vbCrLf & _
+                        "No   - change where they go, or split them by sheet" & vbCrLf & _
+                        "Cancel - stop", vbQuestion + vbYesNoCancel, "Export ticked to PDF")
+        If answer = vbCancel Then Exit Sub
+
+        If answer = vbYes Then
+            outFolder = MakePdfFolder(folderPath)
+            If Len(outFolder) = 0 Then Exit Sub
+            perSheet = False
+            overwrite = True
+        Else
+            outFolder = ChoosePdfFolder(folderPath)
+            If Len(outFolder) = 0 Then Exit Sub
+            If Not AskPdfLayout(perSheet) Then Exit Sub
+            If Not AskPdfOverwrite(outFolder, overwrite) Then Exit Sub
+            askedAll = True
+        End If
+    Else
+        Set files = ChooseFilesToExport()
+        If files Is Nothing Then Exit Sub          ' cancelled
+        If files.Count = 0 Then
+            MsgBox "No Excel files to export.", vbInformation, "Export to PDF"
+            Exit Sub
+        End If
+
+        ' Found before anything is written, the way the rename button checks
+        ' its whole batch first. Two files of the same name from different
+        ' folders produce one PDF, and the second would look like it worked.
+        clash = DuplicateName(files)
+        If Len(clash) > 0 Then
+            MsgBox "Two of the files chosen are both called:" & vbCrLf & vbCrLf & clash & _
+                   vbCrLf & vbCrLf & "They would write the same PDF, so the second would " & _
+                   "quietly replace the first. Export them in separate runs, or into " & _
+                   "different folders.", vbExclamation, "Export to PDF"
+            Exit Sub
+        End If
+
+        outFolder = ChoosePdfFolder(FolderOf(files(1)))
+        If Len(outFolder) = 0 Then Exit Sub
+
+        If Not AskPdfLayout(perSheet) Then Exit Sub
+        If Not AskPdfOverwrite(outFolder, overwrite) Then Exit Sub
+        askedAll = True
     End If
 
-    outFolder = ChoosePdfFolder(FolderOf(files(1)))
-    If Len(outFolder) = 0 Then Exit Sub
-
-    If Not AskPdfLayout(perSheet) Then Exit Sub
-    If Not AskPdfOverwrite(outFolder, overwrite) Then Exit Sub
-
-    If MsgBox(files.Count & " workbook(s) will be exported to:" & vbCrLf & vbCrLf & _
-              outFolder & vbCrLf & vbCrLf & _
-              IIf(perSheet, "One PDF per sheet.", _
-                            "One PDF per workbook, every sheet in tab order.") & vbCrLf & _
-              IIf(overwrite, "PDFs that already exist are overwritten.", _
-                             "PDFs that already exist are left alone.") & vbCrLf & vbCrLf & _
-              "Each workbook is opened read only, with its links updated and " & _
-              "recalculated, so the PDF matches what you see on screen. Nothing is " & _
-              "written back to any schedule." & vbCrLf & vbCrLf & _
-              "Continue?", vbQuestion + vbYesNo, "Export to PDF") = vbNo Then Exit Sub
+    If askedAll Then
+        If MsgBox(files.Count & " workbook(s) will be exported to:" & vbCrLf & vbCrLf & _
+                  outFolder & vbCrLf & vbCrLf & _
+                  IIf(perSheet, "One PDF per sheet.", _
+                                "One PDF per workbook, every sheet in tab order.") & vbCrLf & _
+                  IIf(overwrite, "PDFs that already exist are overwritten.", _
+                                 "PDFs that already exist are left alone.") & vbCrLf & vbCrLf & _
+                  "Each workbook is opened read only, with its links updated and " & _
+                  "recalculated, so the PDF matches what you see on screen. Nothing is " & _
+                  "written back to any schedule." & vbCrLf & vbCrLf & _
+                  "Continue?", vbQuestion + vbYesNo, "Export to PDF") = vbNo Then Exit Sub
+    End If
 
     On Error GoTo Fail
     LogStart "Export to PDF"
@@ -1404,10 +1914,14 @@ Private Function ChooseFilesToExport() As Collection
     Dim c As New Collection
     Dim i As Long
 
-    answer = MsgBox("Which schedules do you want as PDFs?" & vbCrLf & vbCrLf & _
+    answer = MsgBox("Nothing is ticked on ScheduleList, so which schedules do you " & _
+                    "want as PDFs?" & vbCrLf & vbCrLf & _
                     "Yes  - every workbook in a folder" & vbCrLf & _
                     "No   - pick the files yourself" & vbCrLf & _
-                    "Cancel - stop", vbQuestion + vbYesNoCancel, "Export to PDF")
+                    "Cancel - stop" & vbCrLf & vbCrLf & _
+                    "Next time: put an x next to the ones you want on ScheduleList and " & _
+                    "this goes straight to exporting them.", _
+                    vbQuestion + vbYesNoCancel, "Export to PDF")
     If answer = vbCancel Then Exit Function
 
     If answer = vbNo Then
@@ -1454,17 +1968,7 @@ Private Function ChoosePdfFolder(ByVal sourceFolder As String) As String
         If answer = vbCancel Then Exit Function
 
         If answer = vbYes Then
-            If Not FolderExists(suggested) Then
-                On Error Resume Next
-                MkDir suggested
-                On Error GoTo 0
-            End If
-            If Not FolderExists(suggested) Then
-                MsgBox "Could not create:" & vbCrLf & vbCrLf & suggested, _
-                       vbExclamation, "Export to PDF"
-                Exit Function
-            End If
-            ChoosePdfFolder = EndSep(suggested)
+            ChoosePdfFolder = MakePdfFolder(sourceFolder)
             Exit Function
         End If
     End If
@@ -1480,6 +1984,25 @@ Private Function ChoosePdfFolder(ByVal sourceFolder As String) As String
     End If
 
     ChoosePdfFolder = EndSep(picked)
+End Function
+
+
+' The _pdf folder inside `sourceFolder`, created if need be, with its
+' trailing separator. "" (after saying why) if it cannot be made.
+Private Function MakePdfFolder(ByVal sourceFolder As String) As String
+    Dim p As String
+
+    p = EndSep(sourceFolder) & PDF_SUBFOLDER
+    If Not FolderExists(p) Then
+        On Error Resume Next
+        MkDir p
+        On Error GoTo 0
+    End If
+    If Not FolderExists(p) Then
+        MsgBox "Could not create:" & vbCrLf & vbCrLf & p, vbExclamation, "Export to PDF"
+        Exit Function
+    End If
+    MakePdfFolder = EndSep(p)
 End Function
 
 
@@ -1553,21 +2076,42 @@ End Sub
 ' ===========================================================================
 Private Sub FillRow(ByVal wsList As Worksheet, ByVal r As Long, ByVal fileName As String, _
                     ByVal wb As Workbook)
+    Dim rev As String, descr As String, gaps As String
+    Dim found As Boolean
+    Dim chk As String
+
     wsList.Cells(r, C_FILE).Value = fileName
     wsList.Cells(r, 3).Value = ReadMeta(wb, "ScheduleName")
-    wsList.Cells(r, 4).Value = ReadMeta(wb, "Project Name")
-    wsList.Cells(r, 5).Value = ReadMeta(wb, "Project Number")
-    wsList.Cells(r, 6).Value = ReadMeta(wb, "Client")
+    wsList.Cells(r, C_PROJNAME).Value = ReadMeta(wb, "Project Name")
+    wsList.Cells(r, C_PROJNO).Value = ReadMeta(wb, "Project Number")
+    wsList.Cells(r, C_CLIENT).Value = ReadMeta(wb, "Client")
     wsList.Cells(r, 7).Value = ReadMeta(wb, "DocumentType")
-    wsList.Cells(r, 8).Value = ReadMeta(wb, "Revision")
-    wsList.Cells(r, 9).Value = ReadMeta(wb, "Date")
+    wsList.Cells(r, C_REV).Value = ReadMeta(wb, "Revision")
+    wsList.Cells(r, C_DATE).Value = ReadMeta(wb, "Date")
     wsList.Cells(r, 10).Value = ReadMeta(wb, "Prepared by")
     wsList.Cells(r, 11).Value = ReadMeta(wb, "Checked by")
     wsList.Cells(r, 12).Value = ReadMeta(wb, "Approved by")
     wsList.Cells(r, 13).Value = ReadMeta(wb, "DocumentNumber")
     wsList.Cells(r, 14).Value = ReadMeta(wb, "Suitability Status")
     wsList.Cells(r, 15).Value = ReadMeta(wb, "Suitability Description")
-    wsList.Cells(r, C_FILECHK).Value = CheckFile(wb)
+
+    chk = CheckFile(wb)
+
+    ' The description sits only on the revision table, so it is read from
+    ' there: the row of the revision the title block shows.
+    rev = AsText(wsList.Cells(r, C_REV).Value)
+    descr = RevisionDescription(wb, rev, found)
+    wsList.Cells(r, C_REVDESC).Value = descr
+    If Len(rev) > 0 And found And Len(descr) = 0 Then
+        chk = chk & "Revision " & rev & " has no description. "
+    ElseIf Len(rev) > 0 And Not found And Left$(chk, Len(NOT_READY)) <> NOT_READY Then
+        chk = chk & "Revision " & rev & " is not in RevisionTable. "
+    End If
+
+    wsList.Cells(r, C_CLASS).Value = ClassificationOf(wb, gaps)
+    chk = chk & gaps
+
+    wsList.Cells(r, C_FILECHK).Value = chk
 End Sub
 
 
@@ -1582,7 +2126,8 @@ Private Function CheckFile(ByVal wb As Workbook) As String
     Dim links As Variant, i As Long
 
     If GetSheet(wb, SH_META) Is Nothing Then
-        CheckFile = "NOT SET UP - no Metadata sheet. "
+        CheckFile = NOT_READY & "SET UP - no Metadata sheet. Tick it and press " & _
+                    "'Set up / repair links'. "
         Exit Function
     End If
 
@@ -1604,29 +2149,49 @@ Private Function CheckFile(ByVal wb As Workbook) As String
 End Function
 
 
+' True for a row the project-wide comparisons apply to: a schedule that has
+' been set up. One that has not would only be reported as different from
+' everything, which says nothing its own check does not already.
+Private Function IsComparable(ByVal wsList As Worksheet, ByVal r As Long) As Boolean
+    IsComparable = (Left$(AsText(wsList.Cells(r, C_FILECHK).Value), Len(NOT_READY)) <> NOT_READY)
+End Function
+
+
 ' Builds the visible Checks column for every row, from the values on the row
 ' plus the file-derived half. Recomputed every refresh, so changing the
-' project name on Setup updates the report even for files that were reused.
+' project name or the classification on Setup updates the report even for
+' files that were reused.
 Private Sub ComposeChecks(ByVal wsList As Worksheet, ByVal lastRow As Long, _
                           ByVal mpiName As String, ByVal mpiNo As String, _
-                          ByVal mpiClient As String)
+                          ByVal mpiClient As String, ByVal wantClass As String)
     Dim r As Long
     Dim out As String, v As String
+    Dim expected As String
+
+    If Len(wantClass) > 0 Then
+        If wantClass = "NONE" Then expected = "None" Else expected = NormaliseMarking(wantClass)
+    End If
 
     For r = 2 To lastRow
         out = AsText(wsList.Cells(r, C_FILECHK).Value)
 
-        v = AsText(wsList.Cells(r, 4).Value)
-        If Len(mpiName) > 0 And StrComp(v, mpiName, vbTextCompare) <> 0 Then _
-            out = out & "Project Name is '" & v & "', not '" & mpiName & "'. "
+        If IsComparable(wsList, r) Then
+            v = AsText(wsList.Cells(r, C_PROJNAME).Value)
+            If Len(mpiName) > 0 And StrComp(v, mpiName, vbTextCompare) <> 0 Then _
+                out = out & "Project Name is '" & v & "', not '" & mpiName & "'. "
 
-        v = AsText(wsList.Cells(r, 5).Value)
-        If Len(mpiNo) > 0 And StrComp(v, mpiNo, vbTextCompare) <> 0 Then _
-            out = out & "Project Number is '" & v & "', not '" & mpiNo & "'. "
+            v = AsText(wsList.Cells(r, C_PROJNO).Value)
+            If Len(mpiNo) > 0 And StrComp(v, mpiNo, vbTextCompare) <> 0 Then _
+                out = out & "Project Number is '" & v & "', not '" & mpiNo & "'. "
 
-        v = AsText(wsList.Cells(r, 6).Value)
-        If Len(mpiClient) > 0 And StrComp(v, mpiClient, vbTextCompare) <> 0 Then _
-            out = out & "Client is '" & v & "', not '" & mpiClient & "'. "
+            v = AsText(wsList.Cells(r, C_CLIENT).Value)
+            If Len(mpiClient) > 0 And StrComp(v, mpiClient, vbTextCompare) <> 0 Then _
+                out = out & "Client is '" & v & "', not '" & mpiClient & "'. "
+
+            v = AsText(wsList.Cells(r, C_CLASS).Value)
+            If Len(expected) > 0 And StrComp(v, expected, vbTextCompare) <> 0 Then _
+                out = out & "Marked " & v & ", Setup says " & expected & ". "
+        End If
 
         If Len(Trim$(out)) = 0 Then out = "OK"
         wsList.Cells(r, C_CHECKS).Value = Trim$(out)
@@ -1636,41 +2201,59 @@ End Sub
 
 ' Flags any schedule whose revision or date differs from most of the others.
 ' This is the "title block says P03 while everything else says P04" check.
-Private Sub FlagOddOnesOut(ByVal wsList As Worksheet, ByVal lastRow As Long)
-    Dim modeRev As String, modeDate As String
+' The classification gets the same treatment when the Setup sheet does not
+' name one to check against, which is how one CONFIDENTIAL among 25 OFFICIAL
+' still gets noticed.
+Private Sub FlagOddOnesOut(ByVal wsList As Worksheet, ByVal lastRow As Long, _
+                           ByVal checkClass As Boolean)
+    Dim modeRev As String, modeDate As String, modeClass As String
     Dim r As Long
 
     If lastRow < 3 Then Exit Sub
 
-    modeRev = MostCommon(wsList, 8, lastRow)
-    modeDate = MostCommon(wsList, 9, lastRow)
+    modeRev = MostCommon(wsList, C_REV, lastRow)
+    modeDate = MostCommon(wsList, C_DATE, lastRow)
+    If checkClass Then modeClass = MostCommon(wsList, C_CLASS, lastRow)
 
     For r = 2 To lastRow
-        If Len(modeRev) > 0 Then
-            If StrComp(AsText(wsList.Cells(r, 8).Value), modeRev, vbTextCompare) <> 0 Then
-                AppendCheck wsList.Cells(r, C_CHECKS), _
-                            "Revision differs from most schedules (" & modeRev & "). "
+        If IsComparable(wsList, r) Then
+            If Len(modeRev) > 0 Then
+                If StrComp(AsText(wsList.Cells(r, C_REV).Value), modeRev, vbTextCompare) <> 0 Then
+                    AppendCheck wsList.Cells(r, C_CHECKS), _
+                                "Revision differs from most schedules (" & modeRev & "). "
+                End If
             End If
-        End If
-        If Len(modeDate) > 0 Then
-            If StrComp(AsText(wsList.Cells(r, 9).Value), modeDate, vbTextCompare) <> 0 Then
-                AppendCheck wsList.Cells(r, C_CHECKS), _
-                            "Date differs from most schedules (" & modeDate & "). "
+            If Len(modeDate) > 0 Then
+                If StrComp(AsText(wsList.Cells(r, C_DATE).Value), modeDate, vbTextCompare) <> 0 Then
+                    AppendCheck wsList.Cells(r, C_CHECKS), _
+                                "Date differs from most schedules (" & modeDate & "). "
+                End If
+            End If
+            If Len(modeClass) > 0 Then
+                If StrComp(AsText(wsList.Cells(r, C_CLASS).Value), modeClass, vbTextCompare) <> 0 Then
+                    AppendCheck wsList.Cells(r, C_CHECKS), _
+                                "Marked differently from most schedules (" & modeClass & "). "
+                End If
             End If
         End If
     Next r
 End Sub
 
 
+' The value most of the set-up schedules share, or "" when no value is held
+' by more than half of them.
 Private Function MostCommon(ByVal ws As Worksheet, ByVal col As Long, ByVal lastRow As Long) As String
     Dim d As Object, r As Long, v As String
-    Dim best As String, bestN As Long
+    Dim best As String, bestN As Long, n As Long
     Dim k As Variant
 
     Set d = CreateObject("Scripting.Dictionary")
     For r = 2 To lastRow
-        v = AsText(ws.Cells(r, col).Value)
-        If Len(v) > 0 Then d(v) = d(v) + 1
+        If IsComparable(ws, r) Then
+            n = n + 1
+            v = AsText(ws.Cells(r, col).Value)
+            If Len(v) > 0 Then d(v) = d(v) + 1
+        End If
     Next r
     For Each k In d.Keys
         If d(k) > bestN Then
@@ -1679,7 +2262,7 @@ Private Function MostCommon(ByVal ws As Worksheet, ByVal col As Long, ByVal last
         End If
     Next k
     ' Only meaningful if it really is the majority.
-    If bestN * 2 > (lastRow - 1) Then MostCommon = best
+    If n > 0 And bestN * 2 > n Then MostCommon = best
 End Function
 
 
@@ -1718,6 +2301,11 @@ Private Function SnapshotList(ByVal wsList As Worksheet) As Object
     Set d = CreateObject("Scripting.Dictionary")
     Set SnapshotList = d
 
+    ' Rows written under an older column layout would be put back under the
+    ' wrong headings, so they are not kept at all. The next refresh is then a
+    ' full one, which is what a new layout needs anyway.
+    If Not ListLayoutIsCurrent(wsList) Then Exit Function
+
     lastRow = wsList.Cells(wsList.Rows.Count, C_FILE).End(xlUp).Row
     If lastRow < 2 Then Exit Function
 
@@ -1732,6 +2320,32 @@ Private Function SnapshotList(ByVal wsList As Worksheet) As Object
         End If
     Next r
 End Function
+
+
+Private Function ListLayoutIsCurrent(ByVal wsList As Worksheet) As Boolean
+    Dim h As Variant
+    Dim i As Long
+
+    h = Split(LIST_HEADERS, "|")
+    For i = 0 To UBound(h)
+        If StrComp(AsText(wsList.Cells(1, i + 1).Value), CStr(h(i)), vbTextCompare) <> 0 Then Exit Function
+    Next i
+    ListLayoutIsCurrent = True
+End Function
+
+
+' The file name as a link to the file, so a schedule can be opened from the
+' list to check something. A file you open this way is left alone by every
+' button until you close it.
+Private Sub LinkFileCell(ByVal cell As Range, ByVal fullPath As String)
+    Dim txt As String
+    txt = AsText(cell.Value)
+    If Len(txt) = 0 Then Exit Sub
+    On Error Resume Next
+    cell.Hyperlinks.Delete
+    cell.Worksheet.Hyperlinks.Add Anchor:=cell, Address:=fullPath, TextToDisplay:=txt
+    On Error GoTo 0
+End Sub
 
 
 ' A cached row is reusable only when the file has not been touched since.
@@ -1804,8 +2418,9 @@ Private Function RowOrSetup(ByVal wsList As Worksheet, ByVal wsSetup As Workshee
 End Function
 
 
+' Clears the typed revision once it is in the file. The tick stays: it is the
+' selection for the next button too, PDFs most often.
 Private Sub ClearRowEntry(ByVal wsList As Worksheet, ByVal r As Long)
-    wsList.Cells(r, C_PICK).ClearContents
     wsList.Range(wsList.Cells(r, C_NEW_FIRST), _
                  wsList.Cells(r, C_NEW_FIRST + REV_FIELDS - 1)).ClearContents
 End Sub
@@ -2152,23 +2767,45 @@ End Function
 
 
 Private Sub BuildSetupSheet(ByVal ws As Worksheet)
+    Dim lbls As Variant, rowsAt As Variant
+    Dim saved() As Variant
+    Dim cell As Range
+    Dim i As Long
+
+    ' Option values are taken out by their label before anything is cleared,
+    ' and put back on the row the current layout gives that label. Rows move
+    ' when an option is added, and without this a value stays where it was
+    ' and is read under whatever label lands next to it.
+    lbls = Array(LBL_FOLDER, LBL_BACKUP, LBL_AUTO, LBL_FULL, LBL_HFSRC, LBL_HFIMG, _
+                 LBL_HFSCALE, LBL_CLASS)
+    rowsAt = Array(R_OPT_FOLDER, R_OPT_BACKUP, R_OPT_AUTO, R_OPT_FULL, R_OPT_HFSRC, _
+                   R_OPT_HFIMG, R_OPT_HFSCALE, R_OPT_CLASS)
+    ReDim saved(0 To UBound(lbls))
+    For i = 0 To UBound(lbls)
+        Set cell = FindLabel(ws, CStr(lbls(i)), R_OPT_FOLDER, R_REV_FIRST - 2)
+        If Not cell Is Nothing Then saved(i) = cell.Offset(0, 1).Value
+    Next i
+
     ' Start from a clean slate. Formats AND text, because the row a label sits
     ' on can move between versions and a leftover line is worse than no line.
-    ' Column B is left alone - that is the user's data. So is column F, the
-    ' suitability codes, and every other sheet in the workbook.
+    ' Left alone: B1:B4 (the project), the New revision values in column B,
+    ' the PROJECT FIELDS block in columns A and B (schedules link to those
+    ' cells by address, and the names live in column A), column F (the
+    ' suitability codes), and every other sheet in the workbook.
     ws.Range("A1:F60").ClearFormats
-    ws.Range("A5:A60").ClearContents
+    ws.Range("A5:A" & (R_FLD_FIRST - 1)).ClearContents
+    ws.Range(ws.Cells(R_OPT_FOLDER, 2), ws.Cells(R_OPT_LIST, 2)).ClearContents
+    On Error Resume Next
+    ws.Range(ws.Cells(R_OPT_FOLDER, 2), ws.Cells(R_OPT_LIST, 2)).Validation.Delete
+    On Error GoTo 0
     ws.Range("C1:C60").ClearContents
-    ws.Range("H1:H30").ClearFormats
-    ws.Range("H1:H30").ClearContents
+    ws.Range("H1:K40").ClearFormats
+    ws.Range("H1:K40").ClearContents
     ws.Range("A1:A" & R_REV_FIRST + 6).Font.Color = CLR_LABEL
 
     ' Row heights back to standard. An earlier version shrank rows 2 and 5 as
     ' spacers, which squashed the suitability codes sharing those rows in F.
-    ws.Rows(2).RowHeight = ws.StandardHeight
-    ws.Rows(5).RowHeight = ws.StandardHeight
-    ws.Rows(16).RowHeight = ws.StandardHeight
-    ws.Rows(25).RowHeight = ws.StandardHeight
+    ws.Rows("1:40").RowHeight = ws.StandardHeight
 
     ' --- Project -----------------------------------------------------------
     ' Rows 1, 3 and 4 are fixed. Schedules set up before now link to $B$1,
@@ -2183,29 +2820,28 @@ Private Sub BuildSetupSheet(ByVal ws As Worksheet)
 
     ' --- Options -----------------------------------------------------------
     SectionHeader ws, 6, "OPTIONS"
-    ws.Cells(R_OPT_FOLDER, 1).Value = "Schedules folder"
-    ws.Cells(R_OPT_BACKUP, 1).Value = "Backup before changes"
-    ws.Cells(R_OPT_AUTO, 1).Value = "Refresh list on open"
-    ws.Cells(R_OPT_FULL, 1).Value = "Full refresh every time"
-    ws.Cells(R_OPT_HFSRC, 1).Value = "Reference schedule"
-    ws.Cells(R_OPT_HFIMG, 1).Value = "Header image"
-    ws.Cells(R_OPT_HFSCALE, 1).Value = "Header image scale %"
-    ws.Cells(R_OPT_SETUP, 1).Value = "Last setup run"
-    ws.Cells(R_OPT_LIST, 1).Value = "Last list refresh"
+    ws.Cells(R_OPT_FOLDER, 1).Value = LBL_FOLDER
+    ws.Cells(R_OPT_BACKUP, 1).Value = LBL_BACKUP
+    ws.Cells(R_OPT_AUTO, 1).Value = LBL_AUTO
+    ws.Cells(R_OPT_FULL, 1).Value = LBL_FULL
+    ws.Cells(R_OPT_HFSRC, 1).Value = LBL_HFSRC
+    ws.Cells(R_OPT_HFIMG, 1).Value = LBL_HFIMG
+    ws.Cells(R_OPT_HFSCALE, 1).Value = LBL_HFSCALE
+    ws.Cells(R_OPT_CLASS, 1).Value = LBL_CLASS
+    ws.Cells(R_OPT_SETUP, 1).Value = LBL_SETUP
+    ws.Cells(R_OPT_LIST, 1).Value = LBL_LIST
 
-    InputCell ws.Cells(R_OPT_FOLDER, 2)
-    InputCell ws.Cells(R_OPT_BACKUP, 2)
-    InputCell ws.Cells(R_OPT_AUTO, 2)
-    InputCell ws.Cells(R_OPT_FULL, 2)
-    InputCell ws.Cells(R_OPT_HFSRC, 2)
-    InputCell ws.Cells(R_OPT_HFIMG, 2)
-    InputCell ws.Cells(R_OPT_HFSCALE, 2)
+    For i = 0 To UBound(lbls)
+        ws.Cells(rowsAt(i), 2).Value = saved(i)
+    Next i
+
+    InputCell ws.Range(ws.Cells(R_OPT_FOLDER, 2), ws.Cells(R_OPT_CLASS, 2))
     ReadOnlyCell ws.Cells(R_OPT_SETUP, 2)
     ReadOnlyCell ws.Cells(R_OPT_LIST, 2)
 
-    ' Option rows have moved between versions, so a cell can be holding the
-    ' value of whatever used to live on that row. Anything that is not a valid
-    ' answer goes back to the default rather than being left to be read wrong.
+    ' A value that is not a valid answer, from a layout older than the
+    ' save-and-restore above, goes back to the default rather than being
+    ' left to be read wrong.
     NormaliseYesNo ws.Cells(R_OPT_BACKUP, 2), "Yes"
     NormaliseYesNo ws.Cells(R_OPT_AUTO, 2), "No"
     NormaliseYesNo ws.Cells(R_OPT_FULL, 2), "No"
@@ -2213,22 +2849,26 @@ Private Sub BuildSetupSheet(ByVal ws As Worksheet)
     If IsNumeric(ws.Cells(R_OPT_HFSRC, 2).Value) Then ws.Cells(R_OPT_HFSRC, 2).ClearContents
     If Not IsNumeric(ws.Cells(R_OPT_HFSCALE, 2).Value) Then ws.Cells(R_OPT_HFSCALE, 2).Value = 20
     If ws.Cells(R_OPT_HFSCALE, 2).Value <= 0 Then ws.Cells(R_OPT_HFSCALE, 2).Value = 20
-
-    ' Written by the tool on its next run; whatever is there now is stale.
-    ws.Cells(R_OPT_SETUP, 2).ClearContents
-    ws.Cells(R_OPT_LIST, 2).ClearContents
+    If Len(AsText(ws.Cells(R_OPT_CLASS, 2).Value)) > 0 Then
+        If UCase$(AsText(ws.Cells(R_OPT_CLASS, 2).Value)) <> "NONE" And _
+           Not IsKnownMarking(AsText(ws.Cells(R_OPT_CLASS, 2).Value)) Then
+            ws.Cells(R_OPT_CLASS, 2).ClearContents
+        End If
+    End If
 
     YesNoList ws.Cells(R_OPT_BACKUP, 2)
     YesNoList ws.Cells(R_OPT_AUTO, 2)
     YesNoList ws.Cells(R_OPT_FULL, 2)
+    ClassList ws.Cells(R_OPT_CLASS, 2)
 
     Note ws.Cells(R_OPT_FOLDER, 3), "blank = the folder this file is saved in"
     Note ws.Cells(R_OPT_BACKUP, 3), "copies every file into a timestamped folder first"
     Note ws.Cells(R_OPT_AUTO, 3), "reads every schedule when this file is opened"
     Note ws.Cells(R_OPT_FULL, 3), "No = only reopen files that changed since last time"
-    Note ws.Cells(R_OPT_HFSRC, 3), "the schedule that is set up correctly; used by both copy buttons"
+    Note ws.Cells(R_OPT_HFSRC, 3), "the schedule that is set up correctly; copied from by three buttons"
     Note ws.Cells(R_OPT_HFIMG, 3), "logo for the top-right of the header; blank = ask, or leave for none"
     Note ws.Cells(R_OPT_HFSCALE, 3), "size of that logo as a percentage of the image's own size"
+    Note ws.Cells(R_OPT_CLASS, 3), "what every schedule should be marked; ScheduleList flags any that are not"
 
     ' --- New revision ------------------------------------------------------
     SectionHeader ws, R_REV_FIRST - 1, "NEW REVISION"
@@ -2255,21 +2895,32 @@ Private Sub BuildSetupSheet(ByVal ws As Worksheet)
         InputCell ws.Range(ws.Cells(2, 6), ws.Cells(SuitabilityCount(ws) + 1, 6))
     SuitabilityList ws, ws.Cells(R_REV_FIRST + 1, 2)
 
-    ' --- Notes beside the buttons -----------------------------------------
-    ' Row 13 down, so the four buttons above never sit on top of them.
-    Note ws.Range("H12"), "Cells shaded yellow are the ones you fill in."
-    Note ws.Range("H13"), "Progress is shown in the status bar, bottom-left of the Excel window."
-    Note ws.Range("H14"), "Every run writes a line per file to the Log sheet, then a summary."
-    Note ws.Range("H16"), "Added a schedule? Press 'Set up / repair schedules' again - it is safe to re-run."
-    Note ws.Range("H17"), "To reissue: on ScheduleList put an x in 'Add?', fill the blue 'New ...' columns,"
-    Note ws.Range("H18"), "then press 'Add revision to ticked'. Blanks fall back to the block above."
-    Note ws.Range("H20"), "Security classification: set the header/footer on one workbook by hand under"
-    Note ws.Range("H21"), "Page Layout, then press 'Copy headers && footers' to push it to the rest."
-    Note ws.Range("H22"), "Changed the cover or revision page layout itself? 'Copy cover && revision page'"
-    Note ws.Range("H23"), "'Rename files' fills the New FileName column first so you can read it, then renames."
-    Note ws.Range("H24"), "'Tidy sheets' orders every workbook the same way and hides Metadata. No cell is touched."
-    Note ws.Range("H25"), "'Export to PDF' reads only: pick a folder or the files, and it writes one PDF per workbook."
-    Note ws.Range("H26"), "Schedule tool version " & TOOL_VERSION
+    ' --- The buttons, in three groups, with notes under them ----------------
+    ' Columns H, I and J are one group each; BuildButtons puts the buttons in
+    ' the rows these headings leave free.
+    SectionHeader ws, 1, "EVERY ISSUE", 8
+    SectionHeader ws, 1, "ADDING A SCHEDULE", 9
+    SectionHeader ws, 1, "ONE JOB AT A TIME", 10
+
+    Note ws.Range("I5"), "1. Put the file in the folder."
+    Note ws.Range("I6"), "2. Refresh schedule list."
+    Note ws.Range("I7"), "3. Put an x next to it."
+    Note ws.Range("I8"), "4. Press the button above."
+    Note ws.Range("I10"), "Does cover, links, headers and order"
+    Note ws.Range("I11"), "in one go, for the ticked rows only."
+
+    Note ws.Range("H16"), "WHICH SCHEDULES: every button works on the rows with an x in column A of ScheduleList."
+    Note ws.Range("H17"), "Nothing ticked means all of them, and the button says ALL and defaults to No first."
+    Note ws.Range("H18"), "Ticks stay until you delete them, so 'Add revision' then 'Export ticked to PDF' issues the same set."
+    Note ws.Range("H20"), "To reissue: tick the rows, fill the blue 'New ...' columns (blanks come from NEW REVISION on the left),"
+    Note ws.Range("H21"), "press 'Add revision to ticked', then 'Export ticked to PDF'."
+    Note ws.Range("H23"), "Security marking: choose it in 'Security classification', tick, press 'Set classification'."
+    Note ws.Range("H24"), "The Classification column on ScheduleList shows what each file is really marked, footers included."
+    Note ws.Range("H26"), "'Copy headers & footers' and 'Copy cover & revision page' copy from the Reference schedule."
+    Note ws.Range("H27"), "Click a file name on ScheduleList to open it. Buttons leave a file you have open alone."
+    Note ws.Range("H29"), "Cells shaded yellow are the ones you fill in. Progress shows in the status bar, bottom left."
+    Note ws.Range("H30"), "Every run writes a line per file to the Log sheet, then a summary."
+    Note ws.Range("H31"), "Schedule tool version " & TOOL_VERSION
 
     ' --- Layout ------------------------------------------------------------
     ws.Columns("A").ColumnWidth = 24
@@ -2278,7 +2929,8 @@ Private Sub BuildSetupSheet(ByVal ws As Worksheet)
     ws.Columns("D:E").ColumnWidth = 3
     ws.Columns("F").ColumnWidth = 34
     ws.Columns("G").ColumnWidth = 3
-    ws.Range("A1:F60").VerticalAlignment = xlCenter
+    ws.Columns("H:J").ColumnWidth = 34
+    ws.Range("A1:J60").VerticalAlignment = xlCenter
 End Sub
 
 
@@ -2287,7 +2939,7 @@ Private Sub SectionHeader(ByVal ws As Worksheet, ByVal r As Long, ByVal txt As S
                           Optional ByVal firstCol As Long = 1, Optional ByVal lastCol As Long = 3)
     Dim rng As Range
 
-    If firstCol > 1 Then lastCol = firstCol
+    If firstCol > 1 Then lastCol = firstCol     ' a heading over one column
     ws.Cells(r, firstCol).Value = txt
     Set rng = ws.Range(ws.Cells(r, firstCol), ws.Cells(r, lastCol))
 
@@ -2351,6 +3003,20 @@ Private Sub YesNoList(ByVal rng As Range)
 End Sub
 
 
+' The classification dropdown. Only a warning on anything else, so a marking
+' the tool knows but does not offer (SECRET, RESTRICTED) can still be typed;
+' InstallTool clears one it does not know at all.
+Private Sub ClassList(ByVal rng As Range)
+    On Error Resume Next
+    rng.Validation.Delete
+    rng.Validation.Add Type:=xlValidateList, AlertStyle:=xlValidAlertWarning, _
+        Operator:=xlBetween, Formula1:=CLASS_CHOICES
+    rng.Validation.IgnoreBlank = True
+    rng.Validation.InCellDropdown = True
+    On Error GoTo 0
+End Sub
+
+
 Private Sub SuitabilityList(ByVal wsSetup As Worksheet, ByVal rng As Range)
     Dim n As Long
     n = SuitabilityCount(wsSetup)
@@ -2408,12 +3074,7 @@ Private Sub BuildListHeaders(ByVal ws As Worksheet)
         ws.ListObjects(i).Unlist
     Next i
 
-    h = Array("Add?", "FileName", "ScheduleName", "ProjectName", "ProjectNo", _
-              "Client", "DocType", "Revision", "Date", "PrBy", "ChBy", "ApBy", _
-              "DocumentNo", "SuitabilitySt", "SuitabilityDs", "Checks", _
-              "New Rev", "New Status", "New Date", "New PrBy", "New ChBy", _
-              "New ApBy", "New Description", "New FileName", "_Stamp", "_FileChecks")
-
+    h = Split(LIST_HEADERS, "|")
     For i = 0 To UBound(h)
         ws.Cells(1, i + 1).Value = h(i)
     Next i
@@ -2424,16 +3085,28 @@ Private Sub BuildListHeaders(ByVal ws As Worksheet)
     ws.Rows(1).Font.Bold = True
     ws.Rows(1).Font.Color = RGB(0, 0, 0)
     ws.Range(ws.Cells(1, 1), ws.Cells(1, C_CHECKS)).Interior.Color = RGB(230, 230, 230)
+    ws.Cells(1, C_PICK).Interior.Color = RGB(255, 230, 150)
     ws.Range(ws.Cells(1, C_NEW_FIRST), ws.Cells(1, C_NEWNAME)).Interior.Color = RGB(214, 232, 255)
 
     SetColumnState ws
 
     HeaderNote ws.Cells(1, C_PICK), _
-        "Put an x here on every schedule you are reissuing, then press " & _
-        "'Add revision to ticked' on the Setup sheet." & vbCrLf & vbCrLf & _
-        "The revision itself comes from the blue 'New ...' columns on the same row. " & _
-        "Anything you leave blank there is taken from the 'New revision' block on " & _
-        "the Setup sheet, so common values only get typed once."
+        "Put an x here next to every schedule a button should work on." & vbCrLf & vbCrLf & _
+        "Every button on the Setup sheet that changes a schedule, and the PDF " & _
+        "export, works on the ticked rows only. With nothing ticked it offers to " & _
+        "do ALL of them, and says so first." & vbCrLf & vbCrLf & _
+        "Ticks stay until you delete them, so 'Add revision to ticked' then " & _
+        "'Export ticked to PDF' issues the same set."
+    HeaderNote ws.Cells(1, C_REVDESC), _
+        "The Description on the revision table row of the revision shown in " & _
+        "the Revision column, i.e. the latest one."
+    HeaderNote ws.Cells(1, C_CLASS), _
+        "The security marking the file actually carries, read from the headers " & _
+        "and footers of every printed sheet and from any cell on the cover or " & _
+        "revision page that says nothing but a marking." & vbCrLf & vbCrLf & _
+        "'A + B' means the sheets disagree. Checks names any sheet with no marking " & _
+        "at all, and any file that does not match 'Security classification' on " & _
+        "the Setup sheet (or most of the others, when that is blank)."
     HeaderNote ws.Cells(1, C_NEWNAME), _
         "The file name to rename this schedule to." & vbCrLf & vbCrLf & _
         "Press 'Rename files' once to fill this column in by find and replace, " & _
@@ -2443,12 +3116,14 @@ Private Sub BuildListHeaders(ByVal ws As Worksheet)
     HeaderNote ws.Cells(1, C_NEW_FIRST), _
         "The revision line to add to this schedule." & vbCrLf & vbCrLf & _
         "Fill in as much or as little as you like: blank cells fall back to the " & _
-        "'New revision' block on the Setup sheet. Rows without an x in 'Add?' are " & _
-        "ignored." & vbCrLf & vbCrLf & _
+        "'New revision' block on the Setup sheet. Rows without an x in column A " & _
+        "are ignored." & vbCrLf & vbCrLf & _
         "The new line goes in directly under the last revision in the table."
 
+    ' The filter is rebuilt each time so it always spans the current columns.
     On Error Resume Next
-    If Not ws.AutoFilterMode Then ws.Range(ws.Cells(1, 1), ws.Cells(1, C_CHECKS)).AutoFilter
+    If ws.AutoFilterMode Then ws.AutoFilterMode = False
+    ws.Range(ws.Cells(1, 1), ws.Cells(1, C_CHECKS)).AutoFilter
     On Error GoTo 0
 End Sub
 
@@ -2469,7 +3144,7 @@ Private Sub SetColumnState(ByVal ws As Worksheet)
     ws.Columns(C_STAMP).Hidden = True
     ws.Columns(C_FILECHK).Hidden = True
 
-    ws.Columns(9).NumberFormat = "dd/mm/yyyy"                 ' Date
+    ws.Columns(C_DATE).NumberFormat = "dd/mm/yyyy"            ' Date
     ws.Columns(C_NEW_FIRST + 2).NumberFormat = "dd/mm/yyyy"   ' New Date
     ws.Columns(C_NEWNAME).NumberFormat = "@"                  ' file names are text
     ws.Columns(C_STAMP).NumberFormat = "dd/mm/yyyy hh:mm"
@@ -2485,8 +3160,15 @@ Private Sub FormatList(ByVal ws As Worksheet, ByVal lastRow As Long)
     SetColumnState ws
 
     ws.Range(ws.Cells(1, 1), ws.Cells(1, C_NEWNAME)).EntireColumn.AutoFit
+    If ws.Columns(C_REVDESC).ColumnWidth > 45 Then ws.Columns(C_REVDESC).ColumnWidth = 45
+    If ws.Columns(C_CLASS).ColumnWidth > 30 Then ws.Columns(C_CLASS).ColumnWidth = 30
     If ws.Columns(C_CHECKS).ColumnWidth > 60 Then ws.Columns(C_CHECKS).ColumnWidth = 60
     If ws.Columns(C_NEWNAME).ColumnWidth > 60 Then ws.Columns(C_NEWNAME).ColumnWidth = 60
+    ws.Columns(C_PICK).ColumnWidth = 7
+
+    ' Header row and the tick and file name columns stay in view while
+    ' scrolling across to Checks and the New columns.
+    FreezeListPanes ws
 
     If lastRow < 2 Then Exit Sub
 
@@ -2507,34 +3189,66 @@ Private Sub FormatList(ByVal ws As Worksheet, ByVal lastRow As Long)
 End Sub
 
 
+' Freezing works on a window, not a sheet, so the list is made the active
+' sheet first, and if that did not happen nothing is touched: the active
+' window could be some other workbook of yours. The refresh ends on this
+' sheet anyway.
+Private Sub FreezeListPanes(ByVal ws As Worksheet)
+    On Error GoTo Done
+    ws.Parent.Activate
+    ws.Activate
+    If Not ActiveSheet Is ws Then GoTo Done
+
+    With ActiveWindow
+        If Not (.FreezePanes And .SplitRow = 1 And .SplitColumn = C_FILE) Then
+            .FreezePanes = False
+            .ScrollRow = 1
+            .ScrollColumn = 1
+            .SplitColumn = C_FILE
+            .SplitRow = 1
+            .FreezePanes = True
+        End If
+    End With
+Done:
+End Sub
+
+
 Private Sub BuildButtons(ByVal ws As Worksheet)
     Dim i As Long
-    Dim leftCol As Double, topRow As Double
 
     For i = ws.Buttons.Count To 1 Step -1
         ws.Buttons(i).Delete
     Next i
 
-    leftCol = ws.Range("H2").Left
-    topRow = ws.Range("H2").Top
+    ' Three groups, under the headings BuildSetupSheet puts in row 1. Read
+    ' left to right they are how often you need them: every issue, when a
+    ' schedule joins the project, and one-off fixes.
+    ButtonAt ws, "H", 2, "RefreshScheduleList", "Refresh schedule list"
+    ButtonAt ws, "H", 4, "AddRevisionToTicked", "Add revision to ticked"
+    ButtonAt ws, "H", 6, "ExportToPdf", "Export ticked to PDF"
 
-    ' Two columns of three: routine jobs on the left, bulk edits on the right.
-    AddButton ws, leftCol, topRow, "SetupProject", "Set up / repair schedules"
-    AddButton ws, leftCol, topRow + 36, "RefreshScheduleList", "Refresh schedule list"
-    AddButton ws, leftCol, topRow + 72, "AddRevisionToTicked", "Add revision to ticked"
-    AddButton ws, leftCol, topRow + 108, "TidySheets", "Tidy sheets"
+    ButtonAt ws, "I", 2, "SetupNewSchedules", "Set up new schedule(s)"
 
-    AddButton ws, leftCol + 210, topRow, "CopyHeadersFooters", "Copy headers && footers"
-    AddButton ws, leftCol + 210, topRow + 36, "CopyCommonSheets", "Copy cover && revision page"
-    AddButton ws, leftCol + 210, topRow + 72, "RenameFiles", "Rename files"
-    AddButton ws, leftCol + 210, topRow + 108, "ExportToPdf", "Export to PDF"
+    ButtonAt ws, "J", 2, "SetupProject", "Set up / repair links"
+    ButtonAt ws, "J", 4, "SetClassification", "Set classification"
+    ButtonAt ws, "J", 6, "CopyHeadersFooters", "Copy headers && footers"
+    ButtonAt ws, "J", 8, "CopyCommonSheets", "Copy cover && revision page"
+    ButtonAt ws, "J", 10, "TidySheets", "Tidy sheets"
+    ButtonAt ws, "J", 12, "RenameFiles", "Rename files"
 End Sub
 
 
-Private Sub AddButton(ByVal ws As Worksheet, ByVal x As Double, ByVal y As Double, _
-                      ByVal macroName As String, ByVal label As String)
+' A button filling two rows of one column, inset a little so neighbours do
+' not touch.
+Private Sub ButtonAt(ByVal ws As Worksheet, ByVal col As String, ByVal r As Long, _
+                     ByVal macroName As String, ByVal label As String)
+    Dim topCell As Range
     Dim b As Object
-    Set b = ws.Buttons.Add(x, y, 200, 30)
+    Dim h As Double
+
+    Set topCell = ws.Range(col & r)
+    h = topCell.Height + topCell.Offset(1, 0).Height - 4
+    Set b = ws.Buttons.Add(topCell.Left + 2, topCell.Top + 2, topCell.Width - 10, h)
     b.OnAction = macroName
     b.Caption = label
 End Sub
