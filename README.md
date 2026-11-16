@@ -29,29 +29,79 @@ all read the revision table below them.
 2. `Alt+F11` to open the VBA editor.
 3. Delete the old modules: `Module1`, `Module2`, `Module3`, `Module4`,
    `Module11`, `UserForm1`, and the code in `Sheet3`. (Right-click → Remove.)
-4. `File → Import File...` and import all three files from `vba/`:
-   `modUtil.bas`, `modSchedule.bas`, `modMain.bas`.
+4. `File → Import File...` and import all four files from `vba/`:
+   `modUtil.bas`, `modSchedule.bas`, `modMain.bas`, `modUpdate.bas`.
 5. Back in Excel: `Alt+F8` → run **InstallTool**.
-6. Save. This is now your company template.
+6. Fill in **Update source** on the Setup sheet (see below).
+7. Save. This is now your company template.
 
-### Re-installing a newer version
+### Updating: the Check for updates button
 
-**Remove `modUtil`, `modSchedule` and `modMain` before importing the new
-ones.** Importing a `.bas` whose module already exists does not replace it, it
-adds `modMain1` alongside `modMain`, and which copy runs is anyone's guess.
+Once a workbook has `modUpdate` in it, it updates itself. **Check for updates**
+fetches the modules from the address in **Update source** on the Setup sheet,
+says whether anything has changed, and on a Yes:
 
-Import **all three** every time. They change together, and a mismatched set
+1. saves a copy of the workbook next to it, in `_backup tool <date>`
+2. swaps in the new `modUtil`, `modSchedule` and `modMain`, always all three
+3. rebuilds the Setup sheet and buttons (your values are kept) and saves
+
+It decides whether anything changed from the code itself, not the version
+number, so an update that kept the same `TOOL_VERSION` is still found. It
+fetches all of them before touching anything, and checks each one really is
+that module, so a sign-in page or "not found" page is never installed as code.
+
+**Update source** can be:
+
+| Form | Reads from |
+|---|---|
+| `https://github.com/<owner>/<repo>` | the `main` branch |
+| `https://github.com/<owner>/<repo>/tree/<branch>` | that branch |
+| a folder, e.g. a synced SharePoint or Teams folder | a copy of the repo, or just its `vba` folder |
+
+Three things it needs:
+
+- **Excel has to allow code to change code.** Once per person, per PC: File >
+  Options > Trust Center > Trust Center Settings > Macro Settings, tick
+  **Trust access to the VBA project object model**. If IT have locked that
+  setting, the button says so and you update by hand as below.
+- **A GitHub repository has to be public.** A private one needs a login, and a
+  token kept in a spreadsheet that gets copied into every project folder is not
+  a secret for long. If the tool cannot be public, put the `vba` folder on a
+  SharePoint or Teams site everyone syncs and point Update source at that.
+- **Whatever is on `main` is what everybody gets** the next time they press the
+  button. Merge to `main` only what has been tested, and protect the branch so
+  only the people who should can merge to it: anyone who can push to it can run
+  code on every machine that updates from it.
+
+Every project has its own copy of the MPI, so each one is updated when someone
+presses the button in it. The template too.
+
+`AfterToolUpdate` in `modMain` finishes the job after the modules are swapped.
+Keep it, under that name, in every version: older updaters call it.
+
+### Re-installing by hand
+
+For a workbook without `modUpdate` yet, or where the Trust Center setting is
+locked.
+
+**Remove `modUtil`, `modSchedule`, `modMain` (and `modUpdate`, if it is there)
+before importing the new ones.** Importing a `.bas` whose module already exists
+does not replace it, it adds `modMain1` alongside `modMain`, and which copy
+runs is anyone's guess.
+
+Import **all of them** every time. They change together, and a mismatched set
 fails in confusing ways rather than obviously.
 
-The install box and cell `H22` on the Setup sheet both show the tool version.
-If that number is not what you expect, the import did not take.
+The install box and the note under the buttons on the Setup sheet both show
+the tool version. If that number is not what you expect, the import did not
+take.
 
 ### Changing the version number
 
 One place, the declarations at the top of `vba/modUtil.bas`:
 
 ```vba
-Public Const TOOL_VERSION As String = "1.1"
+Public Const TOOL_VERSION As String = "1.2"
 ```
 
 That single constant feeds both the "Ready. Schedule tool version ..." box and
@@ -239,7 +289,8 @@ field **names** on every install; if yours went missing, type them back in.
 | `B12` Header image | logo for the top-right of the header. Blank = the button asks; decline and headers stay text only |
 | `B13` Header image scale % | that logo's size as a percentage of the image's own size. Default `20` |
 | `B14` Security classification | what every schedule should be marked: `None`, `OFFICIAL`, `OFFICIAL-SENSITIVE`, `CONFIDENTIAL`, `COMMERCIAL IN CONFIDENCE`. ScheduleList flags any file that is not. Blank = compare with most of the others instead |
-| `B15`, `B16` | when setup and the refresh last ran. Written by the tool, read only |
+| `B15` Update source | where **Check for updates** installs from: the tool's GitHub address, or a folder holding a copy. See [Updating](#updating-the-check-for-updates-button) |
+| `B16`, `B17` | when setup and the refresh last ran. Written by the tool, read only |
 | `F1:F...` Suitability Codes | the dropdown pushed into every schedule's Metadata sheet and revision table. Seeded with the ISO 19650 codes below; edit here and re-run setup to push the change to all files |
 
 ## Security classification
@@ -546,30 +597,19 @@ What it does to each schedule sheet:
 
 - **Width**: the block spans the schedule's own columns, the print area if one
   is set, otherwise the rightmost column with anything in it below the notes.
-- **Splits**: the three groups are equal thirds of the block's width, as near
-  as the column edges allow. A merge can only end on a column edge, so a
-  schedule with a very wide column can come out at something like 38/29/33.
-  It is worked out from the column widths alone, so the same schedule always
-  gets the same block, and adding a column re-fits it.
-- **Style**: the same fields in the same places as the project template, laid
-  out for reading on paper: the schedule title larger and bold, the revision
-  bold, the three groups aligned left / centre / right instead of each in its
-  own box, one box round the whole block with a rule under the title row.
-  Verdana throughout, and Shrink to fit on every block cell, so text that
-  would overrun its group gets slightly smaller instead of being cut off. A
-  block drawn in another style is brought into line.
-- **Size on paper**: Excel shrinks a wide schedule to fit the page, and a title
-  block in cells shrinks with it. That is how the widest schedules printed
-  theirs at about 3pt. So the tool works out how far Excel will shrink each
-  sheet (from the zoom, or from the paper, margins and column widths when it
-  is set to fit to a page) and enlarges the block and the notes to cancel it
-  out. Every schedule then prints its title at 11pt, the rest of the block at
-  7.5pt and the notes at 7pt, however many columns it has. On a wide schedule
-  that makes the block look large in Normal view; that is expected. The notes
-  box grows by the same factor as its text, so text that fitted still fits.
+- **Splits**: where the three groups divide is **kept** from the existing block
+  when it still spans exactly those columns and every group's text fits.
+  Otherwise the columns are divided in proportion to each group's longest line.
+  So a repair never reshapes a block that already looks right, and adding a
+  column re-fits it.
+- **Style**: Verdana 7, centred, thin box round each group, row 1 at 20.1pt
+  and rows 2-4 at 9.9pt, the project template. A block drawn in another style
+  is brought into line.
 - **Notes**: the General Notes box (a merged cell in column A just below the
   block, starting `General Notes` or `Notes`) is merged across the full width.
   Its text is never rewritten, so bold and line breaks in it survive.
+  Notes text larger than the template's 7pt is set back to 7pt, with the box's
+  rows shrunk by the same factor so the text still fits.
 - **Every page**: print titles become rows 1 to the end of the notes box, or
   further if they already reached further (that is where the schedule's own
   column headings are). Notes repeat on every page on purpose: whoever has page
@@ -593,13 +633,8 @@ failure on the Log, when:
 - there are fewer than six labels in rows 1-4, too few to be sure it is a block
 - the schedule is under three columns wide
 
-A schedule whose block, sizes and print titles are already exactly right is
-not saved, so its modified date does not move.
-
-**Press it again after adding or removing columns, or changing the paper size,
-orientation or margins.** Those change how far Excel shrinks the sheet, and so
-the size the block needs to be. Hand edits to the revision table need nothing:
-every value in the block is a live formula.
+A schedule whose block and print titles are already exactly right is not
+saved, so its modified date does not move.
 
 ## Schedules that print their own title block
 
@@ -864,10 +899,8 @@ is left alone.
 ## Known limits
 
 - The title block's split points are chosen from an estimate of how wide
-  Verdana capitals are (`TB_CHAR_W` in `modSchedule.bas`), and its size from an
-  estimate of how far Excel will shrink the sheet. Both are within a few
-  percent; Shrink to fit covers the first. The on-paper sizes are the `TB_..._PT`
-  constants at the top of `modSchedule.bas`.
+  Verdana 7 capitals are (`TB_CHAR_W` in `modSchedule.bas`). A warning on the
+  Log means check a print preview, not that anything was cut off for certain.
 - The ScheduleList columns changed in 1.2 (`RevDescription` and
   `Classification` were added). `InstallTool` empties the list, and the first
   refresh after it is a full one. Ticks on the old list are not carried over.

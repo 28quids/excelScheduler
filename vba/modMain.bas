@@ -16,6 +16,7 @@ Option Explicit
 '   DrawTitleBlocks       the title block and notes box on the schedule sheet
 '   TidySheets            sheet order, names and visibility
 '   RenameFiles           find and replace across file names
+'   CheckForUpdates       (modUpdate) install a newer version of the tool
 '
 ' The x in column A of ScheduleList is the selection for every button that
 ' changes a schedule: ticked rows only, and with nothing ticked the button
@@ -34,9 +35,11 @@ Private Const R_OPT_HFSRC   As Long = 11
 Private Const R_OPT_HFIMG   As Long = 12
 Private Const R_OPT_HFSCALE As Long = 13
 Private Const R_OPT_CLASS   As Long = 14
-Private Const R_OPT_SETUP   As Long = 15   ' read only
-Private Const R_OPT_LIST    As Long = 16   ' read only
-Private Const R_REV_FIRST   As Long = 18   ' Revision..Description = 18..24
+Private Const R_OPT_UPDATE  As Long = 15
+Private Const R_OPT_SETUP   As Long = 16   ' read only
+Private Const R_OPT_LIST    As Long = 17   ' read only
+Private Const R_REV_FIRST   As Long = 19   ' Revision..Description = 19..25
+Private Const R_REV_OLD     As Long = 18   ' where it was before 1.2, for moving values
 Private Const R_FLD_FIRST   As Long = 27   ' extra project fields
 Private Const R_FLD_COUNT   As Long = 12
 
@@ -52,6 +55,7 @@ Private Const LBL_HFSRC   As String = "Reference schedule"
 Private Const LBL_HFIMG   As String = "Header image"
 Private Const LBL_HFSCALE As String = "Header image scale %"
 Private Const LBL_CLASS   As String = "Security classification"
+Private Const LBL_UPDATE  As String = "Update source"   ' modUpdate reads it by this label
 Private Const LBL_SETUP   As String = "Last setup run"
 Private Const LBL_LIST    As String = "Last list refresh"
 
@@ -113,6 +117,13 @@ Private mLogRow As Long
 ' One-time install
 ' ===========================================================================
 Public Sub InstallTool()
+    InstallToolCore False
+End Sub
+
+
+' quiet is for AfterToolUpdate: no question about the suitability codes and
+' no "Ready" box, since nobody asked for a fresh install.
+Private Sub InstallToolCore(ByVal quiet As Boolean)
     Dim wsSetup As Worksheet
     Dim wsList As Worksheet
     Dim hadCodes As Long
@@ -132,7 +143,7 @@ Public Sub InstallTool()
     EnsureSheet SH_LOG
     BuildButtons wsSetup
 
-    If hadCodes > 0 Then
+    If hadCodes > 0 And Not quiet Then
         If MsgBox("Replace the suitability codes in column F with the ISO 19650 " & _
                   "defaults?" & vbCrLf & vbCrLf & _
                   "Existing revision lines keep whatever they already say. This only " & _
@@ -147,6 +158,7 @@ Public Sub InstallTool()
     ActiveWindow.DisplayGridlines = False
     On Error GoTo 0
 
+    If quiet Then Exit Sub
     MsgBox "Ready. Schedule tool version " & TOOL_VERSION & "." & vbCrLf & vbCrLf & _
            "1. Fill in Client, Project Name and Project Number on this sheet, and the " & _
            "Security classification." & vbCrLf & _
@@ -154,6 +166,94 @@ Public Sub InstallTool()
            "3. Press 'Refresh schedule list'." & vbCrLf & _
            "4. Press 'Set up / repair links' with nothing ticked, and say Yes to all.", _
            vbInformation, "Schedule tool"
+End Sub
+
+
+' ===========================================================================
+' Finishing an update
+'
+' CheckForUpdates (modUpdate) swaps the modules in and then schedules this to
+' run once it has finished, so it runs in the NEW code. It has to stay a
+' Public Sub called AfterToolUpdate in modMain: older copies of the updater
+' call it by that name.
+' ===========================================================================
+Public Sub AfterToolUpdate()
+    Dim pending As String, swapNote As String
+
+    ' A new copy of the updater itself, which could not replace itself while
+    ' it was running. Nothing from modUpdate is running now.
+    pending = HiddenNote("ToolPendingUpdater")
+    If Len(pending) > 0 Then
+        swapNote = SwapModuleFromFile("modUpdate", pending)
+        DeleteHiddenNote "ToolPendingUpdater"
+        ' Its checksum is worked out afresh on the next check.
+        DeleteHiddenNote "ToolSource_modUpdate"
+        On Error Resume Next
+        Kill pending
+        On Error GoTo 0
+    End If
+
+    ' The Setup sheet and buttons for this version. Your values are kept.
+    InstallToolCore True
+
+    On Error Resume Next
+    ThisWorkbook.Save
+    On Error GoTo 0
+
+    MsgBox "Updated to schedule tool version " & TOOL_VERSION & "." & vbCrLf & vbCrLf & _
+           "The Setup sheet and buttons have been rebuilt and the file saved." & _
+           IIf(Len(swapNote) > 0, vbCrLf & vbCrLf & "The updater itself could not be " & _
+               "updated: " & swapNote & " It still works; import modUpdate by hand to " & _
+               "get the new one.", "") & vbCrLf & vbCrLf & _
+           "Press 'Refresh schedule list' before anything else.", _
+           vbInformation, "Check for updates"
+End Sub
+
+
+' Replaces one module with the code in a file. "" when it worked.
+' The old one is renamed first: Excel only finishes removing a module once the
+' macro ends, and importing the same name before then gets "modUpdate1".
+Private Function SwapModuleFromFile(ByVal moduleName As String, ByVal path As String) As String
+    Dim comps As Object, old As Object
+
+    If Len(Dir$(path)) = 0 Then
+        SwapModuleFromFile = "the downloaded copy has gone from " & path & "."
+        Exit Function
+    End If
+
+    On Error GoTo Failed
+    Set comps = ThisWorkbook.VBProject.VBComponents
+    On Error Resume Next
+    Set old = comps(moduleName)
+    On Error GoTo Failed
+    If Not old Is Nothing Then
+        old.Name = moduleName & "_old" & Format$(Now, "hhnnss")
+        comps.Remove old
+    End If
+    comps.Import path
+    Exit Function
+
+Failed:
+    SwapModuleFromFile = "error " & Err.Number & " - " & Err.Description & "."
+End Function
+
+
+' The text held in a hidden workbook name, as the updater writes them.
+Private Function HiddenNote(ByVal noteName As String) As String
+    Dim v As String
+    On Error Resume Next
+    v = ThisWorkbook.Names(noteName).RefersTo
+    On Error GoTo 0
+    If Left$(v, 2) = "=""" And Right$(v, 1) = """" Then
+        HiddenNote = Replace(Mid$(v, 3, Len(v) - 3), """""", """")
+    End If
+End Function
+
+
+Private Sub DeleteHiddenNote(ByVal noteName As String)
+    On Error Resume Next
+    ThisWorkbook.Names(noteName).Delete
+    On Error GoTo 0
 End Sub
 
 
@@ -2874,6 +2974,8 @@ End Function
 Private Sub BuildSetupSheet(ByVal ws As Worksheet)
     Dim lbls As Variant, rowsAt As Variant
     Dim saved() As Variant
+    Dim revSaved(0 To REV_FIELDS - 1) As Variant
+    Dim revAt As Long
     Dim cell As Range
     Dim i As Long
 
@@ -2882,13 +2984,25 @@ Private Sub BuildSetupSheet(ByVal ws As Worksheet)
     ' when an option is added, and without this a value stays where it was
     ' and is read under whatever label lands next to it.
     lbls = Array(LBL_FOLDER, LBL_BACKUP, LBL_AUTO, LBL_FULL, LBL_HFSRC, LBL_HFIMG, _
-                 LBL_HFSCALE, LBL_CLASS)
+                 LBL_HFSCALE, LBL_CLASS, LBL_UPDATE)
     rowsAt = Array(R_OPT_FOLDER, R_OPT_BACKUP, R_OPT_AUTO, R_OPT_FULL, R_OPT_HFSRC, _
-                   R_OPT_HFIMG, R_OPT_HFSCALE, R_OPT_CLASS)
+                   R_OPT_HFIMG, R_OPT_HFSCALE, R_OPT_CLASS, R_OPT_UPDATE)
     ReDim saved(0 To UBound(lbls))
     For i = 0 To UBound(lbls)
         Set cell = FindLabel(ws, CStr(lbls(i)), R_OPT_FOLDER, R_REV_FIRST - 2)
         If Not cell Is Nothing Then saved(i) = cell.Offset(0, 1).Value
+    Next i
+
+    ' The New revision values, the same way: found by their heading, put back
+    ' under wherever the heading is now. Adding an option moved the block.
+    Set cell = FindLabel(ws, "NEW REVISION", R_OPT_FOLDER, R_FLD_FIRST - 2)
+    If cell Is Nothing Then
+        revAt = R_REV_OLD
+    Else
+        revAt = cell.Row + 1
+    End If
+    For i = 0 To REV_FIELDS - 1
+        revSaved(i) = ws.Cells(revAt + i, 2).Value
     Next i
 
     ' Start from a clean slate. Formats AND text, because the row a label sits
@@ -2899,9 +3013,9 @@ Private Sub BuildSetupSheet(ByVal ws As Worksheet)
     ' suitability codes), and every other sheet in the workbook.
     ws.Range("A1:F60").ClearFormats
     ws.Range("A5:A" & (R_FLD_FIRST - 1)).ClearContents
-    ws.Range(ws.Cells(R_OPT_FOLDER, 2), ws.Cells(R_OPT_LIST, 2)).ClearContents
+    ws.Range(ws.Cells(R_OPT_FOLDER, 2), ws.Cells(R_FLD_FIRST - 1, 2)).ClearContents
     On Error Resume Next
-    ws.Range(ws.Cells(R_OPT_FOLDER, 2), ws.Cells(R_OPT_LIST, 2)).Validation.Delete
+    ws.Range(ws.Cells(R_OPT_FOLDER, 2), ws.Cells(R_FLD_FIRST - 1, 2)).Validation.Delete
     On Error GoTo 0
     ws.Range("C1:C60").ClearContents
     ws.Range("H1:K40").ClearFormats
@@ -2933,6 +3047,7 @@ Private Sub BuildSetupSheet(ByVal ws As Worksheet)
     ws.Cells(R_OPT_HFIMG, 1).Value = LBL_HFIMG
     ws.Cells(R_OPT_HFSCALE, 1).Value = LBL_HFSCALE
     ws.Cells(R_OPT_CLASS, 1).Value = LBL_CLASS
+    ws.Cells(R_OPT_UPDATE, 1).Value = LBL_UPDATE
     ws.Cells(R_OPT_SETUP, 1).Value = LBL_SETUP
     ws.Cells(R_OPT_LIST, 1).Value = LBL_LIST
 
@@ -2940,7 +3055,7 @@ Private Sub BuildSetupSheet(ByVal ws As Worksheet)
         ws.Cells(rowsAt(i), 2).Value = saved(i)
     Next i
 
-    InputCell ws.Range(ws.Cells(R_OPT_FOLDER, 2), ws.Cells(R_OPT_CLASS, 2))
+    InputCell ws.Range(ws.Cells(R_OPT_FOLDER, 2), ws.Cells(R_OPT_UPDATE, 2))
     ReadOnlyCell ws.Cells(R_OPT_SETUP, 2)
     ReadOnlyCell ws.Cells(R_OPT_LIST, 2)
 
@@ -2974,6 +3089,7 @@ Private Sub BuildSetupSheet(ByVal ws As Worksheet)
     Note ws.Cells(R_OPT_HFIMG, 3), "logo for the top-right of the header; blank = ask, or leave for none"
     Note ws.Cells(R_OPT_HFSCALE, 3), "size of that logo as a percentage of the image's own size"
     Note ws.Cells(R_OPT_CLASS, 3), "what every schedule should be marked; ScheduleList flags any that are not"
+    Note ws.Cells(R_OPT_UPDATE, 3), "GitHub address of the tool, or a folder with a copy; for 'Check for updates'"
 
     ' --- New revision ------------------------------------------------------
     SectionHeader ws, R_REV_FIRST - 1, "NEW REVISION"
@@ -2985,6 +3101,9 @@ Private Sub BuildSetupSheet(ByVal ws As Worksheet)
     ws.Cells(R_REV_FIRST + 4, 1).Value = "Checked by"
     ws.Cells(R_REV_FIRST + 5, 1).Value = "Approved by"
     ws.Cells(R_REV_FIRST + 6, 1).Value = "Description"
+    For i = 0 To REV_FIELDS - 1
+        ws.Cells(R_REV_FIRST + i, 2).Value = revSaved(i)
+    Next i
     InputCell ws.Range(ws.Cells(R_REV_FIRST, 2), ws.Cells(R_REV_FIRST + 6, 2))
     ws.Cells(R_REV_FIRST + 2, 2).NumberFormat = "dd/mm/yyyy"
 
@@ -3026,7 +3145,8 @@ Private Sub BuildSetupSheet(ByVal ws As Worksheet)
     Note ws.Range("H28"), "'Title block' fits the block and notes to each schedule's columns. No merging by hand."
     Note ws.Range("H29"), "Cells shaded yellow are the ones you fill in. Progress shows in the status bar, bottom left."
     Note ws.Range("H30"), "Every run writes a line per file to the Log sheet, then a summary."
-    Note ws.Range("H31"), "Schedule tool version " & TOOL_VERSION
+    Note ws.Range("H31"), "Schedule tool version " & TOOL_VERSION & _
+                          ". 'Check for updates' installs a newer one from 'Update source'."
 
     ' --- Layout ------------------------------------------------------------
     ws.Columns("A").ColumnWidth = 24
@@ -3332,6 +3452,7 @@ Private Sub BuildButtons(ByVal ws As Worksheet)
     ButtonAt ws, "H", 2, "RefreshScheduleList", "Refresh schedule list"
     ButtonAt ws, "H", 4, "AddRevisionToTicked", "Add revision to ticked"
     ButtonAt ws, "H", 6, "ExportToPdf", "Export ticked to PDF"
+    ButtonAt ws, "H", 11, "CheckForUpdates", "Check for updates"
 
     ButtonAt ws, "I", 2, "SetupNewSchedules", "Set up new schedule(s)"
 
