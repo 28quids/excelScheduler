@@ -2763,6 +2763,8 @@ Private Function BuildTitleBlock(ByVal ws As Worksheet, ByVal wsMeta As Workshee
     If notesTop = 0 Then
         log = log & "No General Notes box found under the block, so none was widened " & _
                     "(the tool only adds one to a schedule that has no title block). "
+    Else
+        log = log & NotesToTemplateSize(ws, notesTop, notesBot, changed)
     End If
 
     ' --- every page carries the block and the notes ------------------------
@@ -3185,6 +3187,36 @@ Private Sub BoxBorder(ByVal rng As Range)
         End With
     Next side
 End Sub
+
+
+' Notes text back to the template's size, with its rows shrunk by the same
+' factor so the box still fits the text. Undoes a short-lived version of this
+' button that enlarged notes to counter print scaling: that grew the font and
+' the rows together, so shrinking both together puts them back as they were.
+' The text itself is not rewritten, so bold words stay bold.
+Private Function NotesToTemplateSize(ByVal ws As Worksheet, ByVal notesTop As Long, _
+                                     ByVal notesBot As Long, ByRef changed As Long) As String
+    Dim cur As Double, f As Double
+    Dim r As Long
+    Dim v As Variant
+
+    On Error Resume Next
+    v = ws.Cells(notesTop, 1).Font.Size
+    If IsNull(v) Then v = ws.Cells(notesTop, 1).Characters(1, 1).Font.Size
+    On Error GoTo 0
+    If Not IsNumeric(v) Then Exit Function
+    cur = CDbl(v)
+    If cur <= TB_SIZE + 0.2 Then Exit Function
+
+    f = TB_SIZE / cur
+    ws.Cells(notesTop, 1).Font.Size = TB_SIZE
+    For r = notesTop To notesBot
+        ws.Rows(r).RowHeight = ws.Rows(r).RowHeight * f
+    Next r
+    changed = changed + 1
+    NotesToTemplateSize = "Notes text back to " & TB_SIZE & "pt from " & cur & "pt, its box " & _
+                          "shrunk to match. "
+End Function
 
 
 ' "$1:$n", where n is the end of the notes (or of the block), or further down

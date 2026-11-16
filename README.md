@@ -608,6 +608,8 @@ What it does to each schedule sheet:
 - **Notes**: the General Notes box (a merged cell in column A just below the
   block, starting `General Notes` or `Notes`) is merged across the full width.
   Its text is never rewritten, so bold and line breaks in it survive.
+  Notes text larger than the template's 7pt is set back to 7pt, with the box's
+  rows shrunk by the same factor so the text still fits.
 - **Every page**: print titles become rows 1 to the end of the notes box, or
   further if they already reached further (that is where the schedule's own
   column headings are). Notes repeat on every page on purpose: whoever has page
